@@ -1,0 +1,33 @@
+language: "en-US"
+
+reviews:
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    base_branches:
+      - ".*"
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  path_instructions:
+    - path: "app/**"
+      instructions: >
+        This is React + Vite frontend code. Flag: missing error boundaries,
+        unhandled promise rejections, XSS via dangerouslySetInnerHTML,
+        missing loading states.
+    - path: "api/**"
+      instructions: >
+        This is Express.js backend code. Flag: missing input validation,
+        SQL injection via string interpolation, missing auth checks,
+        unhandled errors in async routes.
+    - path: "worker/**"
+      instructions: >
+        This is BullMQ worker code. Flag: missing retry logic,
+        unhandled job failures, missing idempotency.
+
+chat:
+  auto_reply: true

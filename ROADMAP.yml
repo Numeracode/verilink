@@ -1,0 +1,203 @@
+meta:
+  product: verilink
+  schema_version: "1.0.0"
+  description: "Verilink MVP Roadmap: Core NHI Protocol (Phase 0)"
+  owner: "Market Analysis"
+  created_at: "2026-04-14"
+  updated_at: "2026-04-14"
+
+groupings:
+  - id: wave-01-fingerprinting
+    name: "Wave 1: Edge Verifier & Agent Fingerprinting"
+    type: wave
+    order: 1
+    is_critical_path: true
+  - id: wave-02-attestation
+    name: "Wave 2: Counterparty Attestation Format"
+    type: wave
+    order: 2
+    is_critical_path: true
+  - id: wave-03-propagation
+    name: "Wave 3: Trust Propagation Engine"
+    type: wave
+    order: 3
+    is_critical_path: true
+
+tasks:
+  - id: "TASK-001"
+    title: "Implement Core Agent Fingerprinting"
+    description: |
+      Define and implement a standard method to uniquely identify any incoming autonomous agent without requiring prior cooperation or registration. This will likely involve extracting cryptographic signatures, headers, and request patterns to generate a deterministic fingerprint for incoming API requests.
+    task_type: feature
+    product: verilink
+    status: completed
+    execution_mode: autonomous
+    ai_readiness_score: 2
+    impact: critical
+    effort: m
+    urgency: high
+    risk: medium
+    strategic_importance: 10
+    wave: wave-01-fingerprinting
+    dependencies: []
+    success_criteria:
+      - "Can deterministically generate a unique ID for an agent across multiple isolated API requests."
+    validation_rules:
+      - id: VR-001
+        description: "Unit tests pass for fingerprint generation"
+        rule_type: automated_test
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "Core fingerprinting implemented in Go with support for JA4, canonicalized headers, and cryptographic key hashes."
+
+  - id: "TASK-002"
+    title: "Build the Edge Verifier Reverse Proxy"
+    description: |
+      Develop a high-performance middleware or reverse-proxy (in Rust or Go) that sits inside an API gateway. It must intercept incoming requests, compute the agent fingerprint (from TASK-001), query an in-memory cache for trust status, and make a hard allow/deny decision in under 1ms.
+    task_type: feature
+    product: verilink
+    status: completed
+    execution_mode: autonomous
+    ai_readiness_score: 2
+    impact: critical
+    effort: l
+    urgency: high
+    risk: high
+    strategic_importance: 10
+    wave: wave-01-fingerprinting
+    dependencies: ["TASK-001"]
+    success_criteria:
+      - "Proxy can intercept and evaluate 10,000 req/sec with <1ms latency overhead."
+      - "Proxy denies requests by default unless trust score is sufficient."
+    validation_rules:
+      - id: VR-002
+        description: "Latency benchmark passes"
+        rule_type: metric_threshold
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "High-performance Go proxy implemented with fingerprint-based allow/deny middleware."
+
+  - id: "TASK-003"
+    title: "Define the JWS Schema for Behavioural Attestations"
+    description: |
+      Define the standard signed format (like a JSON Web Signature or Verifiable Credential) for counterparties to attest to an agent's behaviour. The schema must focus on behavioural facts (e.g. 'completed 142 invoices with 0 disputes') rather than identity facts.
+    task_type: research
+    product: verilink
+    status: completed
+    execution_mode: human_review
+    ai_readiness_score: 3
+    impact: high
+    effort: s
+    urgency: normal
+    risk: low
+    strategic_importance: 8
+    wave: wave-02-attestation
+    dependencies: []
+    success_criteria:
+      - "JSON schema is formally defined and documented."
+      - "Example attestations can be cryptographically signed and verified."
+    validation_rules:
+      - id: VR-003
+        description: "Schema validation passes"
+        rule_type: automated_test
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "Attestation schema defined in docs/specs/attestation_schema.md and implemented in Go using EdDSA signatures."
+
+  - id: "TASK-004"
+    title: "Build Attestation Issue and Verification Service"
+    description: |
+      Develop the backend service responsible for issuing new attestations (when a counterparty reports good/bad behaviour) and verifying existing attestations (checking cryptographic signatures against known public keys of counterparties).
+    task_type: feature
+    product: verilink
+    status: completed
+    execution_mode: autonomous
+    ai_readiness_score: 2
+    impact: high
+    effort: m
+    urgency: normal
+    risk: medium
+    strategic_importance: 8
+    wave: wave-02-attestation
+    dependencies: ["TASK-003"]
+    success_criteria:
+      - "Service can issue, sign, and verify behavioural attestations."
+    validation_rules:
+      - id: VR-004
+        description: "All unit and integration tests pass"
+        rule_type: automated_test
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "Attestation Service implemented in Go with HTTP API for submission and verification, including a trusted issuer registry."
+
+  - id: "TASK-005"
+    title: "Implement the Transitive Trust Graph Algorithm"
+    description: |
+      Design and build the algorithm that calculates trust across the network. If Node A trusts Node B, and Node B attests to Agent X, how much baseline trust does Node A extend to Agent X? The algorithm must account for weighted transitive trust with decay over network distance and time.
+    task_type: feature
+    product: verilink
+    status: completed
+    execution_mode: autonomous
+    ai_readiness_score: 2
+    impact: critical
+    effort: l
+    urgency: normal
+    risk: high
+    strategic_importance: 10
+    wave: wave-03-propagation
+    dependencies: ["TASK-004"]
+    success_criteria:
+      - "Algorithm calculates correct trust scores for multi-hop relationships."
+      - "Trust scores decay correctly over time."
+    validation_rules:
+      - id: VR-005
+        description: "Graph algorithm unit tests pass"
+        rule_type: automated_test
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "VeriRank algorithm implemented in pkg/trust with support for transitive propagation, distance/time decay, and negative overrides."
+
+  - id: "TASK-006"
+    title: "Build Trust Propagation Service and Cache Sync"
+    description: |
+      Build the infrastructure to run the Trust Graph Algorithm over the entire network of attestations and continuously push computed trust scores down to the Edge Verifier's in-memory cache (Redis) so the Edge Verifier can maintain <1ms latency.
+    task_type: feature
+    product: verilink
+    status: completed
+    execution_mode: autonomous
+    ai_readiness_score: 1
+    impact: high
+    effort: xl
+    urgency: normal
+    risk: high
+    strategic_importance: 9
+    wave: wave-03-propagation
+    dependencies: ["TASK-002", "TASK-005"]
+    success_criteria:
+      - "Trust scores are successfully pre-computed and synced to the Edge Verifier."
+      - "Edge verifier can make correct decisions based on transitive trust."
+    validation_rules:
+      - id: VR-006
+        description: "End-to-end integration tests pass"
+        rule_type: automated_test
+        required: true
+    created_at: "2026-04-14"
+    updated_at: "2026-04-14"
+    started_at: "2026-04-14"
+    completed_at: "2026-04-14"
+    notes: "Trust Propagation Service implemented in pkg/trust with background sync loop and edge cache integration."

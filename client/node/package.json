@@ -1,0 +1,9 @@
+{
+  "name": "@numeracode/verilink-client",
+  "version": "0.0.0",
+  "description": "CommonJS client helpers for VeriLink attestation integrations.",
+  "main": "index.js",
+  "type": "commonjs",
+  "private": true,
+  "license": "MIT"
+}
