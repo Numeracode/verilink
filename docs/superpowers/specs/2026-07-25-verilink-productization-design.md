@@ -143,9 +143,9 @@ Edge deployment topology is configurable (`edge.kind`: DaemonSet | Deployment | 
 | Outcome | Trigger | Behavior |
 |---|---|---|
 | **Signed + verified** | Valid HTTP Message Signature for a registered, non-revoked key | Resolve the principal **directly from `keyid`** (`<vrl:p:<uuid>#<key-id>` → principal). Look up score. Apply threshold policy → `allow`/`deny`. `X-Verilink-Status: Allowed\|Denied`. |
-| **Unsigned passthrough** | **No** `Signature` header present, policy `unsigned_action = passthrough` (default) | Proxy to backend with `X-Verilink-Status: Unverified`. No trust verdict. Default for general APIs. |
-| **Unsigned denied** | **No** `Signature` header present, policy `unsigned_action = deny` | 403, `X-Verilink-Status: Denied`, `X-Verilink-Reason: unsigned`. For pure agent endpoints (Codero). |
-| **Invalid signature (any failure)** | `Signature` present but malformed, unknown `keyid`, expired `created`, replayed nonce, or unverifiable | **401** (authn failure) or **403** (known key, no permission). `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature\|unknown-key\|expired\|replayed`. **Never passthrough.** |
+| **Unsigned passthrough** | **Neither** `Signature` **nor** `Signature-Input` header present, policy `unsigned_action = passthrough` (default) | Proxy to backend with `X-Verilink-Status: Unverified`. No trust verdict. Default for general APIs. |
+| **Unsigned denied** | **Neither** `Signature` **nor** `Signature-Input` header present, policy `unsigned_action = deny` | 403, `X-Verilink-Status: Denied`, `X-Verilink-Reason: unsigned`. For pure agent endpoints (Codero). |
+| **Invalid signature (any failure)** | `Signature` or `Signature-Input` present (incomplete pair, malformed, unknown `keyid`, expired `created`, replayed nonce, or unverifiable) | **401** (authn failure) or **403** (known key, no permission). `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature\|unknown-key\|expired\|replayed`. **Never passthrough.** A present-but-incomplete header pair is an authentication attempt, not an unsigned request. |
 
 **HTTP Message Signature profile (RFC 9421 + RFC 9530):**
 
@@ -190,7 +190,7 @@ Signature: sig1=:<base64-signature>:
 - `owner_tenant_id` — the tenant that owns this principal (for dashboard access, private-facts authorization). Nullable for bootstrap seeds.
 - `assurance_level` — **derived from `principal_keys`**: `verified_key` if the principal has at least one non-revoked key with `control_verified_at` set, else `unknown`. Stored as a view or computed on read. `control_verified_at` is the stored fact that makes "proven control" checkable.
 
-**Keys:** one or more public keys per principal, in `principal_keys`, each expressed as a `did:key` verification method and identified by a `key_id` (e.g. `k1`). Supports rotation and history. The JWS `kid` header carries the `key_id` (required for native v1 submissions). **A public key (`key_hash`) is unique among active keys** — one active key belongs to at most one principal (enforced by a partial unique index on `key_hash where valid_until is null and revoked_at is null`). This prevents key reuse across principals.
+**Keys:** one or more public keys per principal, in `principal_keys`, each expressed as a `did:key` verification method and identified by a `key_id` (e.g. `k1`). Supports rotation and history. The JWS `kid` header carries the `key_id` (required for native v1 submissions). **A public key (`key_hash`) is globally unique** — one key belongs to at most one principal, even across rotation/validity windows (enforced by a global unique index on `key_hash`). This prevents key reuse across principals.
 
 **Lazy subject creation:** a subject can be attested to before it registers a key. The control plane creates the principal with `vrl:p:<uuid>`, no key, `assurance_level = unknown`. A later verified registration attaches a key (sets `control_verified_at`) and upgrades assurance to `verified_key`.
 
@@ -208,7 +208,7 @@ Signature: sig1=:<base64-signature>:
 
 **Score computation:**
 
-1. The control plane loads the **active, non-superseded** global attestation set, filtered to attestations younger than **ten half-lives (1800 days)** — at which point the contribution is <0.1% and the truncation error is explicitly tested. **Grouped by `(issuer_id, subject_id, observation_id)`** — at most one edge per group (split-visibility dedup, 5.5).
+1. The control plane loads the **active, non-superseded** global attestation set, filtered to attestations younger than **ten half-lives (1800 days)** — at which point the contribution is <0.1% and the truncation error is explicitly tested. **Grouping key:** `observation_id` when non-empty (explicitly paired attestations deduplicate to one edge per `(issuer_id, subject_id, observation_id)` — split-visibility dedup, 5.5); otherwise `attestation.id` (unpaired attestations never collapse — each is its own group).
 2. It calls `trust-engine.RunVeriRank` (client-streamed, chunked) with the attestation set, the global principal list (with `trust_weight` and `is_bootstrap`), the **weighted bootstrap roots** (`Root { id, weight }`), and an explicit `evaluation_time`. The principal list is streamed as `Principal { id, kind, trust_weight }` rows (entity_kind comes from here, not inferred post-hoc).
 3. The engine runs VeriRank (max 4 hops, distance decay `0.8^d`, time decay half-life 180 days). Roots initialize at `100 × weight` (weighted bootstrap; default `weight = 1.0` → 100). Output is keyed by `vrl:p:<uuid>`, with `entity_kind`.
 4. The control plane writes results to `network_scores` (durable, FK to `principals` ON DELETE CASCADE DEFERRABLE) and `network_score_history` (only on score change). It appends `score.upsert` / `score.delete` events to `sync_events` **in the same transaction** (4.7).
@@ -216,8 +216,8 @@ Signature: sig1=:<base64-signature>:
 **Edge sync (unified `sync_version`, transactionally safe):**
 
 1. `edge-verifier` boots with a tenant API key over TLS.
-2. It fetches a **full snapshot**: `GET /v1/sync/snapshot` returns a versioned, compressed (gzip, or zstd via Accept-Encoding) payload containing the global score table, the **active principal verification keys** (principal ID + key ID + public key), and this tenant's active policy. The edge replaces its in-memory snapshot **atomically**. The snapshot includes a `high_water_version` from a **repeatable-read** image.
-3. Subsequent updates arrive as **SSE events** from a unified `sync_events` log keyed by a monotonic `sync_version`. Event types: `score.upsert`, `score.delete`, `key.upsert`, `key.revoke`, `policy.replace`. The edge applies events in order. If its `Last-Event-ID` is pruned: `410 Gone` → fetch a new full snapshot.
+2. It fetches a **full snapshot**: `GET /v1/sync/snapshot` returns a versioned, compressed (gzip, or zstd via Accept-Encoding) payload containing the global score table, the **active principal verification keys** (principal ID + key ID + public key + `valid_from` + `valid_until`), and this tenant's active policy. The edge replaces its in-memory snapshot **atomically**. The edge **enforces key validity windows locally** (`valid_from`/`valid_until`) — a key outside its window is rejected as `unknown-key` even if the control plane hasn't yet emitted `key.revoke`. The snapshot includes a `high_water_version` from a **repeatable-read** image.
+3. Subsequent updates arrive as **SSE events** from a unified `sync_events` log keyed by a monotonic `sync_version`. Event types: `score.upsert`, `score.delete`, `key.upsert` (carries `valid_from`/`valid_until`), `key.revoke`, `policy.replace`. The edge applies events in order. If its `Last-Event-ID` is pruned: `410 Gone` → fetch a new full snapshot.
 4. **Heartbeats are SSE keepalive comments** (`: ping\n\n`), not durable `sync_events` rows. Freshness is "bytes received on an authenticated stream."
 5. **Non-durable cursor events:** the SSE stream is **filtered per tenant** (`policy.replace` only to the owning tenant). To advance `Last-Event-ID` past events belonging to other tenants (so an edge doesn't get `410` for a version it skipped), the control plane periodically sends a **non-durable cursor SSE event** whose `id` is the committed `high_water_version` — it advances the cursor without allocating a new `sync_version`.
 6. The SSE stream is filtered per tenant: global score/key events to all edges; `policy.replace` only to the owning tenant's edges.
@@ -227,10 +227,10 @@ Signature: sig1=:<base64-signature>:
 **Allow/deny/passthrough decision:**
 
 1. Inbound request hits `edge-verifier` on 8080.
-2. The edge checks for a `Signature` header.
-   - **Absent:** apply `policy.unsigned_action` → `passthrough` (proxy, `X-Verilink-Status: Unverified`) or `deny` (403, `X-Verilink-Reason: unsigned`).
-   - **Present + valid:** verify per 4.3. Resolve the principal **directly from `keyid`** (no alias map). Derive `key_hash` from the verified raw 32-byte public key. Look up the network score (`blacklisted`, `score_reason` are explicit fields). Apply threshold policy → `allow`/`deny`. The fingerprint is computed for telemetry + allow/deny list matching only.
-   - **Present + invalid:** 401/403, `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature|unknown-key|expired|replayed`. Never passthrough.
+2. The edge checks for `Signature` and `Signature-Input` headers.
+   - **Neither present:** apply `policy.unsigned_action` → `passthrough` (proxy, `X-Verilink-Status: Unverified`) or `deny` (403, `X-Verilink-Reason: unsigned`).
+   - **Either present (incomplete pair) or both present + valid:** treat as an authentication attempt. Verify per 4.3. Resolve the principal **directly from `keyid`** (no alias map). Derive `key_hash` from the verified raw 32-byte public key. Look up the network score (`blacklisted`, `score_reason` are explicit fields). Apply threshold policy → `allow`/`deny`. The fingerprint is computed for telemetry + allow/deny list matching only.
+   - **Either present but incomplete/malformed/unknown/expired/replayed/unverifiable:** 401/403, `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature|unknown-key|expired|replayed`. Never passthrough.
 3. The decision is written to a bounded local WAL with a per-edge monotonic `wal_seq`, flushed in batches with a `batch_id`. WAL-full → drop oldest + increment `decisions_dropped_total` (default); or block (enterprise `no_drop_decisions`, opt-in).
 4. **An edge offline >24h:** SSE returns `410 Gone` → full snapshot → resume.
 
@@ -285,7 +285,7 @@ message ScoreRow {
   string entity_kind = 2;          // from the streamed Principal rows
   int32 score = 3;
   bool blacklisted = 4;
-  string score_reason = 5;         // propagated | blacklisted | expired (see 4.6 notes)
+  string score_reason = 5;         // propagated | blacklisted (expired is handled by the control plane as score.delete, not an engine row)
 }
 
 message VerifyRequest {
@@ -332,11 +332,11 @@ message Fingerprint { string sha256 = 1; }
 3. **`blacklisted` + `score_reason` output:** expose the existing blacklist override. `score_reason` enum values:
    - `propagated` — the score was computed via VeriRank propagation from a root.
    - `blacklisted` — a `negative_incident` from an issuer with score ≥ 80 zeroed this principal.
-   - `expired` — the principal had a score but all contributing attestations have expired (score decays to 0 via time decay). 
+   - `expired` is **removed from the engine enum** — score computation loads only active attestations and time decay never literally reaches zero; when a principal disappears from the VeriRank result (all attestations expired/superseded), the **control plane** (not the engine) deletes its `network_scores` row and emits `score.delete`.
    - `unknown` is **not** a stored `score_reason` — unknown principals have no `network_scores` row (per 7.1). `verified` is removed (it was redundant with `propagated` — the engine is pure propagation from roots; a root's own score is `propagated` from itself).
 4. **Weighted roots:** `Root { id, weight }`; initialize at `100 × weight`. Default `weight = 1.0`. Stepwise de-emphasis reduces `weight`. **Single path:** `Root.weight` is the only de-emphasis mechanism; `issuers.trust_weight` is not touched by de-emphasis.
 5. **Max-path algorithm locked:** the engine takes the max trust path (`engine.go:160`), not weighted average. `trust_graph.md` is updated to match (v5). Consensus redesign deferred.
-6. **`observation_id` grouping:** the control plane groups attestations by `(issuer_id, subject_id, observation_id)` before sending to the engine; the engine receives one representative attestation per group (most restrictive visibility). The proto carries `observation_id` for traceability.
+6. **`observation_id` grouping:** the control plane groups attestations by `observation_id` when non-empty (one representative attestation per `(issuer_id, subject_id, observation_id)` group — most restrictive visibility) and by `attestation.id` otherwise (unpaired attestations are never collapsed). The proto carries `observation_id` for traceability.
 
 ### 4.7 Sync event log (transactionally safe)
 
@@ -413,9 +413,11 @@ principal_keys (
   revocation_reason text,
   primary key (principal_id, key_id)
 );
--- A public key is unique among active keys: one active key belongs to at most
--- one principal. Enforced by:
---   unique index active_key_hash on (key_hash) where valid_until is null and revoked_at is null.
+-- A public key is globally unique by key_hash: one key belongs to at most
+-- one principal, even across rotation/validity windows. Enforced by:
+--   unique index key_hash_unique on (key_hash)
+-- This prevents a finite-lived but currently active key from being attached
+-- to multiple principals (the partial-index form only covered valid_until IS NULL).
 
 -- Issuer attributes (a principal that can sign attestations)
 issuers (
@@ -446,7 +448,7 @@ attestations (
   expires_at      timestamptz,
   superseded_by   uuid references attestations(id),
   sig_verified    boolean not null default true,
-  verified_key_id text,                    -- which key verified (from VerifyResult)
+  verified_key_id text not null,                    -- which key verified (from VerifyResult); NOT NULL so the composite FK cannot be bypassed
   received_at     timestamptz not null default now(),
   CHECK (trust_delta BETWEEN -100 AND 100),
   CHECK (
@@ -466,7 +468,7 @@ network_scores (
   entity_kind     text not null,
   score           integer not null,
   blacklisted     boolean not null default false,
-  score_reason    text not null,           -- propagated | blacklisted | expired
+  score_reason    text not null,           -- propagated | blacklisted (expired → control plane deletes the row + emits score.delete)
   computed_at     timestamptz not null default now(),
   sync_version    bigint not null,
   primary key (principal_id)
@@ -481,7 +483,6 @@ network_score_history (
   computed_at     timestamptz not null,
   sync_version    bigint not null,
   primary key (principal_id, sync_version)
-);
 
 -- Sync event log (unified, transactionally safe) — see 4.7
 sync_events (
@@ -699,7 +700,7 @@ Row-level isolation, shared schema. Self-hosted = single tenant. Enterprise = ow
   - `expires_at` set, issuer deactivated: retain until `expires_at` (if still future) or deactivation + 1 year, whichever is later.
   - `expires_at` null, issuer deactivated: retain until deactivation + 1 year.
   After retention, attestations are **deleted** (not tombstoned).
-- **Subject deletion:** the principal is **deactivated** (`status = 'deactivated'`, `deactivated_at = now()`), removed from active scoring. `name` and `metadata` are cleared. The cryptographic record is preserved or deleted **per an explicit legal basis** — not relabeled. Combining subjects into a tombstone is avoided (graph integrity). `network_scores` rows cascade-delete (`ON DELETE CASCADE`); `network_score_history` rows cascade-delete.
+- **Subject deletion:** the principal is **deactivated** (`status = 'deactivated'`, `deactivated_at = now()`), removed from active scoring. `name` and `metadata` are cleared. The cryptographic record is preserved or deleted **per an explicit legal basis** — not relabeled. Combining subjects into a tombstone is avoided (graph integrity). **Deactivation is an UPDATE, so `ON DELETE CASCADE` does not fire** — the control plane **explicitly deletes** the principal's `network_scores` and `network_score_history` rows and emits `score.delete` sync events. History is handled according to the counsel-approved retention basis (preserved or deleted per legal basis, not merely relabeled).
 - **`/v1/privacy/export` and `/v1/privacy/delete`** are workflow initiators, not compliance certifications. **Privacy counsel validates in two stages**: (1) the retention/erasure model reviewed **before step 6** (schema freeze); (2) counsel sign-off **before step 17** (first real personal data ingest).
 - **`facts` never written to logs.** Redaction at every egress. `visibility = 'participants'` facts visible only to issuer-owner, subject-owner, and staff.
 - **One attestation = one visibility.** No field-level mixed visibility. **Split-visibility via `observation_id`:** if an issuer needs some facts public and some participant-only, it issues two attestations with the same `observation_id`. Scoring groups by `(issuer_id, subject_id, observation_id)` and counts **at most one edge per group** (the most restrictive visibility). Paired attestations must agree on `attestation_type` and `trust_delta` (enforced by the control plane; mismatch → 4xx).
@@ -725,7 +726,7 @@ Row-level isolation, shared schema. Self-hosted = single tenant. Enterprise = ow
 | **Replay protection** | Attestations: `iat`/`exp`, dedup on `token_digest`. Requests: nonce cache + `Idempotency-Key` (where required). |
 | **Fail-closed edge** | Unknown principal → score 0, policy default. Stale beyond `max_snapshot_age_seconds` → 503 (or fail-open if `fail_open_expired`). |
 | **`trust_delta` range** | `CHECK (trust_delta BETWEEN -100 AND 100)` + sign constraint (negative only for `negative_incident`). |
-| **Key uniqueness** | Active `key_hash` is unique (partial unique index) — one active key belongs to at most one principal. |
+| **Key uniqueness** | Global `UNIQUE(key_hash)` — one key belongs to at most one principal, even across rotation/validity windows. |
 
 ### 6.1 Abuse and Sybil resistance
 
@@ -774,13 +775,13 @@ Facts never feed VeriRank — only `trust_delta` does.
 
 ### 7.1 Edge (`edge-verifier`, Go)
 
-Four distinct states:
+Five distinct states:
 
 | State | Definition | Behavior |
 |---|---|---|
 | **Unknown principal** | Verified signature, but no score row for the principal | Score 0, `score_reason` absent (no row), policy `below_threshold_action`. Common case. |
-| **Unsigned** | **No** `Signature` header present | `policy.unsigned_action`: `passthrough` (proxy, `X-Verilink-Status: Unverified`) or `deny` (403). Default `passthrough`. |
-| **Invalid signature** | `Signature` present but malformed, unknown `keyid`, expired, replayed, or unverifiable | **401/403**, `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature|unknown-key|expired|replayed`. **Never passthrough.** |
+| **Unsigned** | **Neither** `Signature` **nor** `Signature-Input` header present | `policy.unsigned_action`: `passthrough` (proxy, `X-Verilink-Status: Unverified`) or `deny` (403). Default `passthrough`. |
+| **Invalid signature** | `Signature` or `Signature-Input` present (incomplete pair, malformed, unknown `keyid`, expired, replayed, or unverifiable) | **401/403**, `X-Verilink-Status: Denied`, `X-Verilink-Reason: invalid-signature|unknown-key|expired|replayed`. **Never passthrough.** A present-but-incomplete header pair is an authentication attempt, not an unsigned request. |
 | **Degraded (stale)** | Time since last authenticated SSE bytes (heartbeat or event) > `max_snapshot_age_seconds` (default 300, tunable 60–1800) | 503, `X-Verilink-Mode: stale` — unless `fail_open_expired = true`, then serve with `X-Verilink-Mode: expired`. |
 | **Degraded (unreachable, contact fresh)** | Sync unreachable, last authenticated bytes within `max_snapshot_age_seconds` | Serve snapshot, `X-Verilink-Mode: degraded`. Retry 1s → 30s. |
 
@@ -955,9 +956,9 @@ Read-only summaries only: node/edge counts, top issuers by outgoing volume. No p
 
 ---
 
-## 15. Open questions for round 5
+## 15. Resolved review decisions
 
-None new from round 4. The five round-4 questions are resolved:
+All review questions are resolved; no open questions remain.
 
 1. **`behavioral@0` deadline** — `BEHAVIORAL_V0_CUTOFF` config = GA + 183 days (mechanism, not an invented date).
 2. **No-drop `required_outage_seconds`** — default 900s, independent of `max_snapshot_age_seconds`; `wal_max_bytes = max(8 GiB, calculated)`.

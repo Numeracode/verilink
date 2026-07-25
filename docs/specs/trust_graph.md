@@ -14,7 +14,9 @@ The trust score $T(s)$ for a subject $s$ is calculated using a weighted transiti
 
 ### 1. Direct Trust
 If a Root of Trust $R$ issues a direct attestation for Subject $s$:
-$$T(s) = \text{attestation\_score} \times \text{staleness\_decay}$$
+$$T(s) = T(R) \times \frac{\text{attestation\_score}}{100} \times \text{distance\_decay} \times \text{staleness\_decay}$$
+
+Note: the engine applies the $0.8$ distance-decay factor on the first edge too (there is no "hop 0" exemption in `pkg/trust/engine.go`). $T(R)$ initializes at $100 \times \text{root\_weight}$.
 
 ### 2. Transitive (Multi-Hop) Trust
 If $R$ trusts $A$, and $A$ trusts $s$:
@@ -27,7 +29,7 @@ $$T(s) = T(A) \times \text{attestation\_score\_from\_A} \times \text{distance\_d
 ### 4. Conflict Resolution
 If multiple paths lead to different scores for the same subject:
 - **Positive Consensus:** Maximum trust path — the highest-scoring path wins. This matches the tested implementation in `pkg/trust/engine.go` (the `contribution > currentScore` check at line 160). A weighted-average consensus is a documented future redesign; v1 locks the max-path algorithm.
-- **Negative Override:** Any "Negative Incident" attestation from a highly trusted node ($T > 80$) immediately drops the target's score to 0 (Blacklist).
+- **Negative Override:** Any "Negative Incident" attestation from a highly trusted node ($T \ge 80$, matching `BlacklistIssuerThreshold = 80` in `pkg/trust/engine.go`) immediately drops the target's score to 0 (Blacklist).
 
 ## Algorithm Flow
 1.  **Initialize:** Load all verified attestations from the Attestation Service.
