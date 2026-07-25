@@ -26,7 +26,7 @@ $$T(s) = T(A) \times \text{attestation\_score\_from\_A} \times \text{distance\_d
 
 ### 4. Conflict Resolution
 If multiple paths lead to different scores for the same subject:
-- **Positive Consensus:** Weighted average of all valid paths.
+- **Positive Consensus:** Maximum trust path — the highest-scoring path wins. This matches the tested implementation in `pkg/trust/engine.go` (the `contribution > currentScore` check at line 160). A weighted-average consensus is a documented future redesign; v1 locks the max-path algorithm.
 - **Negative Override:** Any "Negative Incident" attestation from a highly trusted node ($T > 80$) immediately drops the target's score to 0 (Blacklist).
 
 ## Algorithm Flow
