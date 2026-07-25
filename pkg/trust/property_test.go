@@ -10,6 +10,8 @@ import (
 	"github.com/messagesgoel-blip/verilink/pkg/attestation"
 )
 
+var evaluationTime = time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+
 func claim(issuer, subject string, delta int, at time.Time) *attestation.AttestationClaims {
 	return &attestation.AttestationClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -34,11 +36,10 @@ func defaultWeightPrincipals(ids ...string) []Principal {
 // any root produces NO score rows (unrooted nodes are never initialized).
 func TestProperty_UnrootedClusterZeroScore(t *testing.T) {
 	engine := NewEngine()
-	now := time.Now()
 	claims := []*attestation.AttestationClaims{
-		claim("vrl:p:a", "vrl:p:b", 100, now),
+		claim("vrl:p:a", "vrl:p:b", 100, evaluationTime),
 	}
-	table := engine.RunVeriRank(claims, nil, nil, now)
+	table := engine.RunVeriRank(claims, nil, nil, evaluationTime)
 	if len(table.Rows) != 0 {
 		t.Errorf("unrooted cluster produced %d rows (expected 0)", len(table.Rows))
 		for _, row := range table.Rows {
@@ -52,24 +53,23 @@ func TestProperty_UnrootedClusterZeroScore(t *testing.T) {
 func TestProperty_MonotonicityUnderPositiveAttestations(t *testing.T) {
 	f := func(seed int64) bool {
 		r := rand.New(rand.NewSource(seed))
-		now := time.Now()
 		root := "vrl:p:root"
 		roots := []Root{{ID: root, Weight: 1.0}}
 
 		delta1 := 1 + r.Intn(99) // [1, 99] — positive
 		claims1 := []*attestation.AttestationClaims{
-			claim(root, "vrl:p:a", delta1, now),
+			claim(root, "vrl:p:a", delta1, evaluationTime),
 		}
 		principals := defaultWeightPrincipals(root)
-		table1 := NewEngine().RunVeriRank(claims1, principals, roots, now)
+		table1 := NewEngine().RunVeriRank(claims1, principals, roots, evaluationTime)
 		scoreA1 := scoreForRow(t, table1, "vrl:p:a")
 
 		delta2 := 1 + r.Intn(99) // additional positive
 		claims2 := []*attestation.AttestationClaims{
-			claim(root, "vrl:p:a", delta1, now),
-			claim(root, "vrl:p:a", delta2, now),
+			claim(root, "vrl:p:a", delta1, evaluationTime),
+			claim(root, "vrl:p:a", delta2, evaluationTime),
 		}
-		table2 := NewEngine().RunVeriRank(claims2, principals, roots, now)
+		table2 := NewEngine().RunVeriRank(claims2, principals, roots, evaluationTime)
 		scoreA2 := scoreForRow(t, table2, "vrl:p:a")
 
 		return scoreA2 >= scoreA1
@@ -90,14 +90,13 @@ func TestProperty_DecayMonotonic(t *testing.T) {
 		engine := NewEngine()
 		root := "vrl:p:root"
 		roots := []Root{{ID: root, Weight: 1.0}}
-		evalNow := time.Now()
 
-		fresh := claim(root, "vrl:p:fresh", 100, evalNow)
-		old := claim(root, "vrl:p:old", 100, evalNow.Add(-time.Duration(ageDays)*24*time.Hour))
+		fresh := claim(root, "vrl:p:fresh", 100, evaluationTime)
+		old := claim(root, "vrl:p:old", 100, evaluationTime.Add(-time.Duration(ageDays)*24*time.Hour))
 
 		principals := defaultWeightPrincipals(root)
-		tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evalNow)
-		tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evalNow)
+		tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evaluationTime)
+		tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evaluationTime)
 
 		sf := scoreForRow(t, tableFresh, "vrl:p:fresh")
 		so := scoreForRow(t, tableOld, "vrl:p:old")
@@ -117,14 +116,13 @@ func TestProperty_DecayStrictDecrease(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
 	roots := []Root{{ID: root, Weight: 1.0}}
-	evalNow := time.Now()
 
-	fresh := claim(root, "vrl:p:fresh", 100, evalNow)
-	old := claim(root, "vrl:p:old", 100, evalNow.Add(-365*24*time.Hour))
+	fresh := claim(root, "vrl:p:fresh", 100, evaluationTime)
+	old := claim(root, "vrl:p:old", 100, evaluationTime.Add(-365*24*time.Hour))
 
 	principals := defaultWeightPrincipals(root)
-	tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evalNow)
-	tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evalNow)
+	tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evaluationTime)
+	tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evaluationTime)
 
 	sf := scoreForRow(t, tableFresh, "vrl:p:fresh")
 	so := scoreForRow(t, tableOld, "vrl:p:old")
@@ -138,14 +136,13 @@ func TestProperty_DecayStrictDecrease(t *testing.T) {
 func TestProperty_PermutationInvariance(t *testing.T) {
 	f := func(seed int64) bool {
 		r := rand.New(rand.NewSource(seed))
-		now := time.Now()
 		root := "vrl:p:root"
 		roots := []Root{{ID: root, Weight: 1.0}}
 
 		claims := []*attestation.AttestationClaims{
-			claim(root, "vrl:p:a", 100, now),
-			claim("vrl:p:a", "vrl:p:b", 100, now),
-			claim("vrl:p:b", "vrl:p:c", 100, now),
+			claim(root, "vrl:p:a", 100, evaluationTime),
+			claim("vrl:p:a", "vrl:p:b", 100, evaluationTime),
+			claim("vrl:p:b", "vrl:p:c", 100, evaluationTime),
 		}
 		principals := defaultWeightPrincipals(root, "vrl:p:a", "vrl:p:b")
 		// Shuffle
@@ -153,12 +150,12 @@ func TestProperty_PermutationInvariance(t *testing.T) {
 			claims[i], claims[j] = claims[j], claims[i]
 		})
 
-		table := NewEngine().RunVeriRank(claims, principals, roots, now)
+		table := NewEngine().RunVeriRank(claims, principals, roots, evaluationTime)
 		// Run again with a different shuffle
 		r.Shuffle(len(claims), func(i, j int) {
 			claims[i], claims[j] = claims[j], claims[i]
 		})
-		table2 := NewEngine().RunVeriRank(claims, principals, roots, now)
+		table2 := NewEngine().RunVeriRank(claims, principals, roots, evaluationTime)
 
 		if len(table.Rows) != len(table2.Rows) {
 			return false
@@ -182,20 +179,19 @@ func TestProperty_TrustWeightReducesContribution(t *testing.T) {
 	root := "vrl:p:root"
 	a := "vrl:p:a"
 	target := "vrl:p:target"
-	now := time.Now()
 	roots := []Root{{ID: root, Weight: 1.0}}
 
 	claims := []*attestation.AttestationClaims{
-		claim(root, a, 100, now),
-		claim(a, target, 100, now),
+		claim(root, a, 100, evaluationTime),
+		claim(a, target, 100, evaluationTime),
 	}
 
 	// Root must have weight 1.0; A's weight varies.
 	fullWeight := defaultWeightPrincipals(root, a)
 	halfWeight := []Principal{{ID: root, TrustWeight: 1.0}, {ID: a, TrustWeight: 0.5}}
 
-	tableFull := engine.RunVeriRank(claims, fullWeight, roots, now)
-	tableHalf := engine.RunVeriRank(claims, halfWeight, roots, now)
+	tableFull := engine.RunVeriRank(claims, fullWeight, roots, evaluationTime)
+	tableHalf := engine.RunVeriRank(claims, halfWeight, roots, evaluationTime)
 
 	scoreFull := scoreForRow(t, tableFull, target)
 	scoreHalf := scoreForRow(t, tableHalf, target)
@@ -234,20 +230,19 @@ func TestProperty_EvaluationTimeDeterminism(t *testing.T) {
 func TestProperty_HopBounds(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
-	now := time.Now()
 	roots := []Root{{ID: root, Weight: 1.0}}
 
 	// root -> a0 -> a1 -> a2 -> a3 -> a4
 	// a0 = 1 hop, a1 = 2, a2 = 3, a3 = 4 (MaxHops), a4 = 5 (must NOT propagate).
 	claims := []*attestation.AttestationClaims{
-		claim(root, "vrl:p:a0", 100, now),
-		claim("vrl:p:a0", "vrl:p:a1", 100, now),
-		claim("vrl:p:a1", "vrl:p:a2", 100, now),
-		claim("vrl:p:a2", "vrl:p:a3", 100, now),
-		claim("vrl:p:a3", "vrl:p:a4", 100, now),
+		claim(root, "vrl:p:a0", 100, evaluationTime),
+		claim("vrl:p:a0", "vrl:p:a1", 100, evaluationTime),
+		claim("vrl:p:a1", "vrl:p:a2", 100, evaluationTime),
+		claim("vrl:p:a2", "vrl:p:a3", 100, evaluationTime),
+		claim("vrl:p:a3", "vrl:p:a4", 100, evaluationTime),
 	}
 	principals := defaultWeightPrincipals(root, "vrl:p:a0", "vrl:p:a1", "vrl:p:a2", "vrl:p:a3")
-	table := engine.RunVeriRank(claims, principals, roots, now)
+	table := engine.RunVeriRank(claims, principals, roots, evaluationTime)
 
 	// a3 (4 hops) MUST be present with a non-zero score.
 	a3Score := 0
@@ -275,14 +270,13 @@ func TestProperty_HopBounds(t *testing.T) {
 func TestProperty_WeightedRootScaling(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
-	now := time.Now()
 	roots := []Root{{ID: root, Weight: 0.5}}
 
 	claims := []*attestation.AttestationClaims{
-		claim(root, "vrl:p:a", 100, now),
+		claim(root, "vrl:p:a", 100, evaluationTime),
 	}
 	principals := defaultWeightPrincipals(root)
-	table := engine.RunVeriRank(claims, principals, roots, now)
+	table := engine.RunVeriRank(claims, principals, roots, evaluationTime)
 
 	rootScore := scoreForRow(t, table, root)
 	if rootScore != 50 {
@@ -298,15 +292,14 @@ func TestProperty_ExplicitBlacklist(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
 	target := "vrl:p:target"
-	now := time.Now()
 	roots := []Root{{ID: root, Weight: 1.0}}
 
 	claims := []*attestation.AttestationClaims{
-		claim(root, target, 100, now),       // target gets a positive score
-		claim(root, target, -100, now),      // root (score≥80) blacklists target
+		claim(root, target, 100, evaluationTime),  // target gets a positive score
+		claim(root, target, -100, evaluationTime), // root (score≥80) blacklists target
 	}
 	principals := defaultWeightPrincipals(root)
-	table := engine.RunVeriRank(claims, principals, roots, now)
+	table := engine.RunVeriRank(claims, principals, roots, evaluationTime)
 
 	for _, row := range table.Rows {
 		if row.PrincipalID == target {
@@ -333,15 +326,14 @@ func TestProperty_BlacklistWithoutPriorPositive(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
 	target := "vrl:p:target"
-	now := time.Now()
 	roots := []Root{{ID: root, Weight: 1.0}}
 
 	// Only a negative incident — no prior positive attestation to target.
 	claims := []*attestation.AttestationClaims{
-		claim(root, target, -100, now),
+		claim(root, target, -100, evaluationTime),
 	}
 	principals := defaultWeightPrincipals(root)
-	table := engine.RunVeriRank(claims, principals, roots, now)
+	table := engine.RunVeriRank(claims, principals, roots, evaluationTime)
 
 	// The target MUST appear in the score table with blacklisted=true
 	// (unconditional override — the subject is initialized by the override
