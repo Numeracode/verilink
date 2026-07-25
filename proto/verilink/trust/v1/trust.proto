@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package verilink.trust.v1;
+
+option go_package = "github.com/messagesgoel-blip/verilink/pkg/trustpb;trustpb";
+
+service TrustEngine {
+  rpc RunVeriRank(stream RunChunk) returns (ScoreTable);
+  rpc VerifyAttestation(VerifyRequest) returns (VerifyResult);
+  rpc Fingerprint(FingerprintRequest) returns (Fingerprint);
+}
+
+// RunVeriRank: client-streamed input to stay within gRPC message limits.
+// The first chunk MUST be a RunHeader; subsequent chunks are attestations,
+// principals, and roots in any order.
+message RunChunk {
+  oneof payload {
+    RunHeader header = 1;
+    Attestation attestation = 2;
+    Principal principal = 3;
+    Root root = 4;
+  }
+}
+
+message RunHeader {
+  int64 evaluation_time_unix = 1;
+}
+
+message Attestation {
+  string issuer_id = 1;            // vrl:p:<uuid>
+  string subject_id = 2;           // vrl:p:<uuid>
+  int32 trust_delta = 3;
+  int64 issued_at_unix = 4;
+  int64 expires_at_unix = 5;
+  string attestation_type = 6;
+  string observation_id = 7;       // for split-visibility grouping; empty = no pairing
+}
+
+// Principal: streamed so the engine can stamp entity_kind on output rows.
+// Every root, attestation issuer, and attestation subject MUST have a streamed
+// Principal row — the server fail-closes (InvalidArgument) otherwise. The
+// trust_weight=1.0 default exists only in the legacy in-process path
+// (CalculateScores/ReplaceEdgesAndCalculate), not in the gRPC path.
+message Principal {
+	string id = 1;                   // vrl:p:<uuid>
+	string entity_kind = 2;          // agent | issuer | both
+	double trust_weight = 3;        // 0.0..1.0; required for issuers in the gRPC path
+	bool is_bootstrap = 4;
+}
+
+message Root {
+  string id = 1;                   // vrl:p:<uuid> — a bootstrap principal (always an issuer)
+  double weight = 2;               // 0.0..1.0; root initializes at 100 * weight
+}
+
+message ScoreTable {
+  repeated ScoreRow rows = 1;
+  int64 computed_at_unix = 2;
+}
+
+message ScoreRow {
+  string principal_id = 1;
+  string entity_kind = 2;
+  int32 score = 3;
+  bool blacklisted = 4;
+  string score_reason = 5;         // propagated | blacklisted
+}
+
+message VerifyRequest {
+  string jws_token = 1;
+  repeated KeyCandidate candidate_keys = 2;
+}
+
+message KeyCandidate {
+  string key_id = 1;               // e.g. k1
+  bytes public_key = 2;            // raw 32-byte Ed25519 public key
+}
+
+message VerifyResult {
+  bool valid = 1;
+  string verified_key_id = 2;      // which candidate matched
+  string issuer_id = 3;
+  string subject_id = 4;
+  AttestationPayload payload = 5;
+  string error = 6;
+}
+
+message AttestationPayload {
+  string attestation_type = 1;
+  bytes facts_json = 2;            // raw verified JSON bytes
+  int32 trust_level_delta = 3;
+  int64 issued_at_unix = 4;
+  int64 expires_at_unix = 5;
+  string jti = 6;
+  string schema_version = 7;
+  string visibility = 8;           // participants | public
+  string observation_id = 9;
+}
+
+message FingerprintRequest {
+  string ja4 = 1;
+  map<string, string> headers = 2;
+  string key_hash = 3;             // SHA-256 over raw 32-byte public key
+  string protocol = 4;
+}
+
+message Fingerprint {
+  string sha256 = 1;
+}
