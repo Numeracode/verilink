@@ -227,10 +227,8 @@ func (e *Engine) propagate(
 		kindByDID[p.ID] = p.EntityKind
 	}
 
-	rootSet := make(map[string]bool)
 	scores := make(map[string]float64)
 	for _, r := range roots {
-		rootSet[r.ID] = true
 		scores[r.ID] = 100.0 * r.Weight
 	}
 

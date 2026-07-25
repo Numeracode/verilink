@@ -33,6 +33,8 @@ type Root struct {
 // Issuer is a principal that can sign attestations, with a trust_weight that
 // multiplies its contributions in VeriRank. trust_weight is the orthogonal
 // issuer-quality knob; bootstrap de-emphasis uses Root.Weight, not trust_weight.
+// Issuer is a legacy alias for Principal retained for API compatibility.
+// New code should use Principal directly.
 type Issuer struct {
 	DID         string  // the principal ID (vrl:p:<uuid>)
 	TrustWeight float64 // 0.0..1.0 multiplier on this issuer's contributions
