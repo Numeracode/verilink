@@ -405,8 +405,15 @@ func TestContract_3HopTransitivePropagation(t *testing.T) {
 		},
 	}
 	roots := []Root{{ID: root, Weight: 1.0}}
+	// All issuers must have Principal rows (propagate defaults missing
+	// principals to weight 0 — fail-closed). root, A, and B are all issuers.
+	principals := []Principal{
+		{ID: root, TrustWeight: 1.0},
+		{ID: a, TrustWeight: 1.0},
+		{ID: b, TrustWeight: 1.0},
+	}
 
-	table := engine.RunVeriRank(claims, nil, roots, now)
+	table := engine.RunVeriRank(claims, principals, roots, now)
 
 	// C must score non-zero — transitive propagation works across 3 hops
 	// because A, B, and C share one namespace.
@@ -698,7 +705,7 @@ func (e *Engine) ReplaceEdgesAndCalculate(claims []*attestation.AttestationClaim
 }
 ```
 
-**Import note:** `engine.go` already imports `github.com/golang-jwt/jwt/v5` and `github.com/messagesgoel-blip/verilink/pkg/attestation`. Add `"sort"` to the imports for the sorted output in `propagate`.
+Add `"sort"` to the imports at the top of `engine.go`.
 
 - [ ] **Step 5: Run the 3-hop contract test**
 
@@ -754,6 +761,17 @@ func claim(issuer, subject string, delta int, at time.Time) *attestation.Attesta
 	}
 }
 
+// defaultWeightPrincipals builds Principal rows with trust_weight=1.0 for
+// every ID. Needed because propagate defaults missing principals to weight 0
+// (fail-closed) — tests must supply principal rows for every issuer.
+func defaultWeightPrincipals(ids ...string) []Principal {
+	out := make([]Principal, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, Principal{ID: id, TrustWeight: 1.0})
+	}
+	return out
+}
+
 // TestProperty_UnrootedClusterZeroScore: an issuer cluster with no path from
 // any root produces NO score rows (unrooted nodes are never initialized).
 func TestProperty_UnrootedClusterZeroScore(t *testing.T) {
@@ -784,7 +802,8 @@ func TestProperty_MonotonicityUnderPositiveAttestations(t *testing.T) {
 		claims1 := []*attestation.AttestationClaims{
 			claim(root, "vrl:p:a", delta1, now),
 		}
-		table1 := NewEngine().RunVeriRank(claims1, nil, roots, now)
+		principals := defaultWeightPrincipals(root)
+		table1 := NewEngine().RunVeriRank(claims1, principals, roots, now)
 		scoreA1 := scoreForRow(t, table1, "vrl:p:a")
 
 		delta2 := 1 + r.Intn(99) // additional positive
@@ -792,7 +811,7 @@ func TestProperty_MonotonicityUnderPositiveAttestations(t *testing.T) {
 			claim(root, "vrl:p:a", delta1, now),
 			claim(root, "vrl:p:a", delta2, now),
 		}
-		table2 := NewEngine().RunVeriRank(claims2, nil, roots, now)
+		table2 := NewEngine().RunVeriRank(claims2, principals, roots, now)
 		scoreA2 := scoreForRow(t, table2, "vrl:p:a")
 
 		return scoreA2 >= scoreA1
@@ -818,8 +837,9 @@ func TestProperty_DecayMonotonic(t *testing.T) {
 		fresh := claim(root, "vrl:p:fresh", 100, evalNow)
 		old := claim(root, "vrl:p:old", 100, evalNow.Add(-time.Duration(ageDays)*24*time.Hour))
 
-		tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, nil, roots, evalNow)
-		tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, nil, roots, evalNow)
+		principals := defaultWeightPrincipals(root)
+		tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evalNow)
+		tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evalNow)
 
 		sf := scoreForRow(t, tableFresh, "vrl:p:fresh")
 		so := scoreForRow(t, tableOld, "vrl:p:old")
@@ -844,8 +864,9 @@ func TestProperty_DecayStrictDecrease(t *testing.T) {
 	fresh := claim(root, "vrl:p:fresh", 100, evalNow)
 	old := claim(root, "vrl:p:old", 100, evalNow.Add(-365*24*time.Hour))
 
-	tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, nil, roots, evalNow)
-	tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, nil, roots, evalNow)
+	principals := defaultWeightPrincipals(root)
+	tableFresh := engine.RunVeriRank([]*attestation.AttestationClaims{fresh}, principals, roots, evalNow)
+	tableOld := engine.RunVeriRank([]*attestation.AttestationClaims{old}, principals, roots, evalNow)
 
 	sf := scoreForRow(t, tableFresh, "vrl:p:fresh")
 	so := scoreForRow(t, tableOld, "vrl:p:old")
@@ -868,17 +889,18 @@ func TestProperty_PermutationInvariance(t *testing.T) {
 			claim("vrl:p:a", "vrl:p:b", 100, now),
 			claim("vrl:p:b", "vrl:p:c", 100, now),
 		}
+		principals := defaultWeightPrincipals(root, "vrl:p:a", "vrl:p:b")
 		// Shuffle
 		r.Shuffle(len(claims), func(i, j int) {
 			claims[i], claims[j] = claims[j], claims[i]
 		})
 
-		table := NewEngine().RunVeriRank(claims, nil, roots, now)
+		table := NewEngine().RunVeriRank(claims, principals, roots, now)
 		// Run again with a different shuffle
 		r.Shuffle(len(claims), func(i, j int) {
 			claims[i], claims[j] = claims[j], claims[i]
 		})
-		table2 := NewEngine().RunVeriRank(claims, nil, roots, now)
+		table2 := NewEngine().RunVeriRank(claims, principals, roots, now)
 
 		if len(table.Rows) != len(table2.Rows) {
 			return false
@@ -910,8 +932,9 @@ func TestProperty_TrustWeightReducesContribution(t *testing.T) {
 		claim(a, target, 100, now),
 	}
 
-	fullWeight := []Principal{{ID: a, TrustWeight: 1.0}}
-	halfWeight := []Principal{{ID: a, TrustWeight: 0.5}}
+	// Root must have weight 1.0; A's weight varies.
+	fullWeight := defaultWeightPrincipals(root, a)
+	halfWeight := []Principal{{ID: root, TrustWeight: 1.0}, {ID: a, TrustWeight: 0.5}}
 
 	tableFull := engine.RunVeriRank(claims, fullWeight, roots, now)
 	tableHalf := engine.RunVeriRank(claims, halfWeight, roots, now)
@@ -934,9 +957,10 @@ func TestProperty_EvaluationTimeDeterminism(t *testing.T) {
 		claim(root, "vrl:p:a", 100, evalTime),
 		claim("vrl:p:a", "vrl:p:b", 100, evalTime),
 	}
+	principals := defaultWeightPrincipals(root, "vrl:p:a")
 
-	t1 := engine.RunVeriRank(claims, nil, roots, evalTime)
-	t2 := engine.RunVeriRank(claims, nil, roots, evalTime)
+	t1 := engine.RunVeriRank(claims, principals, roots, evalTime)
+	t2 := engine.RunVeriRank(claims, principals, roots, evalTime)
 	if len(t1.Rows) != len(t2.Rows) {
 		t.Fatalf("row count differs: %d vs %d", len(t1.Rows), len(t2.Rows))
 	}
@@ -964,7 +988,8 @@ func TestProperty_HopBounds(t *testing.T) {
 		claim("vrl:p:a2", "vrl:p:a3", 100, now),
 		claim("vrl:p:a3", "vrl:p:a4", 100, now),
 	}
-	table := engine.RunVeriRank(claims, nil, roots, now)
+	principals := defaultWeightPrincipals(root, "vrl:p:a0", "vrl:p:a1", "vrl:p:a2", "vrl:p:a3")
+	table := engine.RunVeriRank(claims, principals, roots, now)
 
 	// a3 (4 hops) MUST be present with a non-zero score.
 	a3Score := 0
@@ -998,7 +1023,8 @@ func TestProperty_WeightedRootScaling(t *testing.T) {
 	claims := []*attestation.AttestationClaims{
 		claim(root, "vrl:p:a", 100, now),
 	}
-	table := engine.RunVeriRank(claims, nil, roots, now)
+	principals := defaultWeightPrincipals(root)
+	table := engine.RunVeriRank(claims, principals, roots, now)
 
 	rootScore := scoreForRow(t, table, root)
 	if rootScore != 50 {
@@ -1021,7 +1047,8 @@ func TestProperty_ExplicitBlacklist(t *testing.T) {
 		claim(root, target, 100, now),       // target gets a positive score
 		claim(root, target, -100, now),      // root (score≥80) blacklists target
 	}
-	table := engine.RunVeriRank(claims, nil, roots, now)
+	principals := defaultWeightPrincipals(root)
+	table := engine.RunVeriRank(claims, principals, roots, now)
 
 	for _, row := range table.Rows {
 		if row.PrincipalID == target {
@@ -1055,26 +1082,26 @@ func TestProperty_BlacklistWithoutPriorPositive(t *testing.T) {
 	claims := []*attestation.AttestationClaims{
 		claim(root, target, -100, now),
 	}
-	table := engine.RunVeriRank(claims, nil, roots, now)
+	principals := defaultWeightPrincipals(root)
+	table := engine.RunVeriRank(claims, principals, roots, now)
 
+	// The target MUST appear in the score table with blacklisted=true
+	// (unconditional override — the subject is initialized by the override
+	// even without a prior positive path).
+	targetFound := false
 	for _, row := range table.Rows {
 		if row.PrincipalID == target {
+			targetFound = true
 			if !row.Blacklisted {
 				t.Error("expected blacklisted=true for target (unconditional override)")
 			}
 			if row.ScoreReason != ScoreReasonBlacklisted {
 				t.Errorf("expected score_reason=blacklisted, got %s", row.ScoreReason)
 			}
-			return
 		}
 	}
-	// The target may appear in the score table because the blacklist override
-	// sets it to 0. If it doesn't appear, that's also acceptable (the subject
-	// was never initialized). The key assertion is that the engine doesn't
-	// crash and the root is still present.
-	rootScore := scoreForRow(t, table, root)
-	if rootScore != 100 {
-		t.Errorf("expected root score 100, got %d", rootScore)
+	if !targetFound {
+		t.Fatal("target not found in score table — unconditional blacklist failed to create a row")
 	}
 }
 ```
@@ -1769,11 +1796,10 @@ func main() {
 	grpcSrv, healthSrv := newGRPCServer()
 
 	// HTTP /healthz endpoint (spec requires HTTP /healthz on all three services).
+	// healthHandler is a package-level function so tests can call it directly
+	// without recreating the handler.
 	httpMux := http.NewServeMux()
-	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
+	httpMux.HandleFunc("/healthz", healthHandler)
 	httpSrv := &http.Server{Addr: httpAddr, Handler: httpMux}
 	go func() {
 		log.Printf("trust-engine HTTP /healthz on %s", httpAddr)
@@ -1785,7 +1811,9 @@ func main() {
 	// Graceful shutdown on SIGTERM/SIGINT with bounded, concurrent shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-sigCh
 		log.Printf("trust-engine shutting down...")
 
@@ -1828,6 +1856,10 @@ func main() {
 	if err := grpcSrv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+
+	// Wait for shutdown to complete before exiting. Without this, main can
+	// exit before the HTTP shutdown goroutine finishes cleanup.
+	<-shutdownDone
 }
 
 func unaryPanicRecovery(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
@@ -1849,6 +1881,13 @@ func streamPanicRecovery(srv interface{}, ss grpc.ServerStream, info *grpc.Strea
 	}()
 	return handler(srv, ss)
 }
+
+// healthHandler is the HTTP /healthz handler. Package-level so tests can
+// call it directly without recreating the handler logic.
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
 ```
 
 - [ ] **Step 3: Write the contract tests**
@@ -1868,11 +1907,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/messagesgoel-blip/verilink/pkg/attestation"
 	trustpb "github.com/messagesgoel-blip/verilink/pkg/trustpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 // startTestServer starts a gRPC server on a random port using newGRPCServer
@@ -2128,40 +2170,35 @@ func TestServer_VerifyAttestation(t *testing.T) {
 }
 
 func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
-	client, _, cleanup := startTestServer(t)
-	defer cleanup()
-
-	// Send a token that's not valid base64 — the attestation.Verify call
-	// may panic on malformed input. The interceptor should recover and
-	// return codes.Internal instead of crashing the server.
-	res, err := client.VerifyAttestation(context.Background(), &trustpb.VerifyRequest{
-		JwsToken: "!!!not-a-jwt!!!",
-		CandidateKeys: []*trustpb.KeyCandidate{
-			{KeyId: "k1", PublicKey: make([]byte, ed25519.PublicKeySize)},
-		},
-	})
-	// Either a gRPC error (codes.Internal from interceptor recovery) or
-	// a VerifyResult{Valid:false} (from the candidate-key loop catching
-	// the error) is acceptable. The key assertion: the server didn't crash.
-	if err != nil {
-		// If it's a gRPC error, it should be Internal (from panic recovery),
-		// not some other code.
-		if status.Code(err) != codes.Internal {
-			t.Logf("got non-Internal error (acceptable if not a panic): %v", err)
-		}
-	} else if res.Valid {
-		t.Error("expected invalid for garbage token")
+	// Test the interceptors directly with a handler that deliberately panics.
+	// This verifies the interceptor recovers and returns codes.Internal.
+	info := &grpc.UnaryServerInfo{FullMethod: "/test/Panic"}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		panic("deliberate panic")
 	}
 
-	// Verify the server is still alive by making a second call.
-	res2, err := client.Fingerprint(context.Background(), &trustpb.FingerprintRequest{
-		Ja4: "test", Protocol: "HTTP/1.1",
-	})
-	if err != nil {
-		t.Fatal("server crashed after malformed input — second call failed")
+	resp, err := unaryPanicRecovery(context.Background(), nil, info, handler)
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
 	}
-	if res2.Sha256 == "" {
-		t.Error("second call returned empty fingerprint — server may have crashed")
+	if status.Code(err) != codes.Internal {
+		t.Errorf("expected codes.Internal, got %s", status.Code(err))
+	}
+	if resp != nil {
+		t.Errorf("expected nil response, got %v", resp)
+	}
+
+	// Also test the stream interceptor.
+	streamInfo := &grpc.StreamServerInfo{FullMethod: "/test/PanicStream"}
+	streamHandler := func(srv interface{}, ss grpc.ServerStream) error {
+		panic("deliberate stream panic")
+	}
+	err = streamPanicRecovery(nil, nil, streamInfo, streamHandler)
+	if err == nil {
+		t.Fatal("expected error from stream panic recovery, got nil")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Errorf("expected codes.Internal, got %s", status.Code(err))
 	}
 }
 
@@ -2173,25 +2210,30 @@ func TestServer_VerifyAttestation_JtiRoundTrip(t *testing.T) {
 	issuer := "vrl:p:issuer"
 	subject := "vrl:p:subject"
 
-	// Sign a token with a JTI (RegisteredClaims.ID).
-	token, err := attestation.Sign(issuer, subject, attestation.VerilinkClaims{
-		Type:            "transaction_summary",
-		Facts:           map[string]interface{}{"count": 1},
-		TrustLevelDelta: 10,
-	}, priv)
+	// Manually sign a token with a JTI (RegisteredClaims.ID). The existing
+	// Sign() doesn't set ID, so we build the claims and sign with jwt directly.
+	claims := &attestation.AttestationClaims{
+		VerilinkClaims: attestation.VerilinkClaims{
+			Type:            "transaction_summary",
+			Facts:           map[string]interface{}{"count": 1},
+			TrustLevelDelta: 10,
+		},
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    issuer,
+			Subject:   subject,
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(365 * 24 * time.Hour)),
+			ID:        "jti-test-abc123",
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	signedToken, err := token.SignedString(priv)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The existing Sign() doesn't set JTI (it's a v1 addition). To test
-	// JTI round-tripping, we need to sign with a JTI. Since Sign() doesn't
-	// expose ID, we test that the server returns an empty jti for tokens
-	// without one (the current behavior), and document that JTI support
-	// requires extending Sign() to accept a jti parameter (post-v1 fix,
-	// tracked in the spec's out-of-scope list). For now, assert jti is
-	// empty (not panicked) for tokens without JTI.
 	res, err := client.VerifyAttestation(context.Background(), &trustpb.VerifyRequest{
-		JwsToken: token,
+		JwsToken: signedToken,
 		CandidateKeys: []*trustpb.KeyCandidate{
 			{KeyId: "k1", PublicKey: pub},
 		},
@@ -2200,12 +2242,10 @@ func TestServer_VerifyAttestation_JtiRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !res.Valid {
-		t.Fatal("expected valid")
+		t.Fatalf("expected valid, got invalid: %s", res.Error)
 	}
-	// jti is empty because Sign() doesn't set RegisteredClaims.ID in v1.
-	// This asserts the field is present (not panicked) and empty.
-	if res.Payload.Jti != "" {
-		t.Errorf("expected empty jti (Sign doesn't set ID in v1), got %s", res.Payload.Jti)
+	if res.Payload.Jti != "jti-test-abc123" {
+		t.Errorf("expected jti jti-test-abc123, got %s", res.Payload.Jti)
 	}
 }
 
@@ -2312,20 +2352,10 @@ func TestServer_Health(t *testing.T) {
 }
 
 func TestServer_HTTPHealthz(t *testing.T) {
-	_, _, cleanup := startTestServer(t)
-	defer cleanup()
-
-	// The test server doesn't start the HTTP /healthz listener (that's in
-	// main()). This test verifies the handler directly.
-	handler := http.NewServeMux()
-	handler.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
+	// Test the production healthHandler directly — no recreated handler.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/healthz", nil)
-	handler.ServeHTTP(rec, req)
+	healthHandler(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
