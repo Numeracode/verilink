@@ -907,7 +907,7 @@ Read-only summaries only: node/edge counts, top issuers by outgoing volume. No p
 1. **Go baseline benchmark** (`scripts/benchmark-baseline.sh`) — first gate.
 2. **Privacy counsel review (stage 1)** — review retention/erasure model (5.5) **before** step 6.
 3. **Monorepo restructure + CI** — directory layout, CI for Go + TS, parity harness scaffold (Go-only).
-4. **Engine fixes** — `evaluation_time` determinism, `trust_weight` (bootstrap stays 1.0), `blacklisted` + `score_reason` (`propagated|blacklisted|expired`), weighted roots (`Root { id, weight }`), max-path documentation. 3-hop contract test.
+4. **Engine fixes** — `evaluation_time` determinism, `trust_weight` (bootstrap stays 1.0), `blacklisted` + `score_reason` (`propagated|blacklisted`), weighted roots (`Root { id, weight }`), max-path documentation. 3-hop contract test.
 5. **Trust-engine gRPC** — client-streamed `RunVeriRank` with `Principal` rows, `VerifyAttestation` with `{key_id, public_key}` candidates returning `verified_key_id`, `Fingerprint`.
 6. **Control-plane TS foundation** — adapt Whimsy's `db/`, `middleware/`, `authz/`, `shared/`. Express + healthcheck. **Migrations (schema frozen after this step).**
 7. **Data model + domains** — schema in Section 5. `tenant`, `registry`, `graph`, `policy`, `bootstrap`, `billing`, `events`, `sync`.
