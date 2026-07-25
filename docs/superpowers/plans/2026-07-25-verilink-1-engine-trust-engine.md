@@ -154,24 +154,31 @@ set -euo pipefail
 
 BENCHTIME="${BENCHTIME:-10000x}"
 OUTPUT="$(mktemp)"
+trap 'rm -f "$OUTPUT"' EXIT
 
 echo "Running VR-002 local baseline benchmark (benchtime=$BENCHTIME)..."
 go test -bench=BenchmarkEdgeVerifierDecision -benchtime="$BENCHTIME" -run='^$' ./cmd/edge-verifier/ 2>&1 | tee "$OUTPUT"
 
 # Extract ns/op value (field 3 on the benchmark line) and compare in awk
-# (float-safe). 1 ms = 1,000,000 ns.
-awk '/^BenchmarkEdgeVerifierDecision/ {
+# (float-safe). 1 ms = 1,000,000 ns. Fail if no benchmark line matched.
+awk '
+/^BenchmarkEdgeVerifierDecision/ {
   if ($3+0 > 1000000) {
     print "FAIL: mean ns/op (" $3 ") exceeds 1ms budget"
+    found = 1
     exit 1
   } else {
     print "PASS: mean ns/op (" $3 ") within 1ms budget"
+    found = 1
     exit 0
   }
+}
+END {
+  if (!found) {
+    print "FAIL: no benchmark line matched — benchmark may not have run"
+    exit 1
+  }
 }' "$OUTPUT"
-RESULT=$?
-rm -f "$OUTPUT"
-exit $RESULT
 ```
 
 - [ ] **Step 4: Make it executable and run it**
@@ -636,7 +643,7 @@ func (e *Engine) calculateScoresLocked() map[string]int {
 }
 ```
 
-For `ReplaceEdgesAndCalculate`, update it to replace edges and then delegate:
+For `ReplaceEdgesAndCalculate`, update it to replace edges and then score the **same sanitized edge snapshot** that was stored (not the original claims, which may include nil/future-dated entries that were filtered):
 
 ```go
 // ReplaceEdgesAndCalculate atomically replaces the entire edge set and returns
@@ -650,13 +657,14 @@ func (e *Engine) ReplaceEdgesAndCalculate(claims []*attestation.AttestationClaim
 		e.addAttestationLocked(c)
 	}
 
-	// Delegate to the new path.
+	// Score the sanitized edge snapshot (e.edges), not the original claims.
+	// Build a call-local RunVeriRank from the stored edges.
 	now := time.Now()
 	roots := make([]Root, 0, len(e.rootsOfTrust))
 	for did := range e.rootsOfTrust {
 		roots = append(roots, Root{ID: did, Weight: 1.0})
 	}
-	table := e.RunVeriRank(claims, nil, roots, now)
+	table := e.runVeriRankFromEdges(e.edges, nil, roots, now)
 	out := make(map[string]int, len(table.Rows))
 	for _, row := range table.Rows {
 		out[row.PrincipalID] = row.Score
@@ -664,6 +672,30 @@ func (e *Engine) ReplaceEdgesAndCalculate(claims []*attestation.AttestationClaim
 	return out
 }
 ```
+
+Add a `runVeriRankFromEdges` internal helper that takes `[]Edge` directly (avoids rebuilding JWT claims from edges). This is the same logic as `RunVeriRank` but starts from edges instead of claims:
+
+```go
+// runVeriRankFromEdges runs VeriRank from a pre-built edge set (used by the
+// legacy ReplaceEdgesAndCalculate path). Call-local; does not mutate e.edges.
+func (e *Engine) runVeriRankFromEdges(edges []Edge, principals []Principal, roots []Root, evaluationTime time.Time) ScoreTable {
+	// This is the same body as RunVeriRank but starts from `edges` instead
+	// of building edges from claims. Extract the shared logic into a
+	// private helper to avoid duplication — or, if RunVeriRank is the only
+	// public entry point, have ReplaceEdgesAndCalculate build claims from
+	// e.edges and call RunVeriRank (simpler, slight overhead). For v1,
+	// the simplest correct approach is to have RunVeriRank accept an
+	// optional pre-built edge set; if nil, it builds from claims.
+	//
+	// RECOMMENDED: refactor RunVeriRank to call a shared
+	// propagate(edges, principals, roots, evalTime) ScoreTable helper,
+	// and have both RunVeriRank and runVeriRankFromEdges call it.
+	// For the plan, implement propagate() and have both call it.
+	return e.propagate(edges, principals, roots, evaluationTime)
+}
+```
+
+**Import note:** The legacy delegation uses `jwt.NewNumericDate` and `attestation.AttestationClaims`, so `engine.go` must import `github.com/golang-jwt/jwt/v5` and `github.com/messagesgoel-blip/verilink/pkg/attestation` (both already imported in the existing file). Additionally, add `"sort"` to the imports (for the sorted output in `RunVeriRank`/`propagate`).
 
 - [ ] **Step 5: Run the 3-hop contract test**
 
@@ -768,11 +800,12 @@ func TestProperty_MonotonicityUnderPositiveAttestations(t *testing.T) {
 }
 
 // TestProperty_DecayMonotonic: older attestations produce lower scores than
-// fresh ones, all else equal.
+// fresh ones, all else equal. Uses a bounded age (uint16 % 366 days).
 func TestProperty_DecayMonotonic(t *testing.T) {
-	f := func(ageDays int) bool {
-		if ageDays < 0 || ageDays > 365 {
-			return true // skip out-of-range
+	f := func(ageSeed uint16) bool {
+		ageDays := int(ageSeed) % 366 // 0..365
+		if ageDays == 0 {
+			return true // skip zero-age (trivially equal)
 		}
 		engine := NewEngine()
 		root := "vrl:p:root"
@@ -787,7 +820,7 @@ func TestProperty_DecayMonotonic(t *testing.T) {
 
 		sf := scoreForRow(t, tableFresh, "vrl:p:fresh")
 		so := scoreForRow(t, tableOld, "vrl:p:old")
-		return so <= sf
+		return so < sf
 	}
 	if err := quick.Check(f, &quick.Config{MaxCount: 50}); err != nil {
 		t.Error(err)
@@ -887,31 +920,95 @@ func TestProperty_EvaluationTimeDeterminism(t *testing.T) {
 	}
 }
 
-// TestProperty_HopBounds: a chain longer than MaxHops does not propagate.
+// TestProperty_HopBounds: a chain of exactly MaxHops (4) edges propagates to
+// the 4th node; the 5th node (5 hops) must NOT be reached.
 func TestProperty_HopBounds(t *testing.T) {
 	engine := NewEngine()
 	root := "vrl:p:root"
 	now := time.Now()
 	roots := []Root{{ID: root, Weight: 1.0}}
 
-	// Build a chain: root -> a0 -> a1 -> a2 -> a3 -> a4 -> a5
-	// MaxHops = 4, so a5 (6 hops from root) should not be reached.
+	// root -> a0 -> a1 -> a2 -> a3 -> a4
+	// a0 = 1 hop, a1 = 2, a2 = 3, a3 = 4 (MaxHops), a4 = 5 (must NOT propagate).
 	claims := []*attestation.AttestationClaims{
 		claim(root, "vrl:p:a0", 100, now),
 		claim("vrl:p:a0", "vrl:p:a1", 100, now),
 		claim("vrl:p:a1", "vrl:p:a2", 100, now),
 		claim("vrl:p:a2", "vrl:p:a3", 100, now),
 		claim("vrl:p:a3", "vrl:p:a4", 100, now),
-		claim("vrl:p:a4", "vrl:p:a5", 100, now),
 	}
 	table := engine.RunVeriRank(claims, nil, roots, now)
 
-	// a4 (5 hops) may or may not be reached depending on convergence; a5 (6 hops) must not.
+	// a3 (4 hops) MUST be present with a non-zero score.
+	a3Score := 0
+	a3Found := false
 	for _, row := range table.Rows {
-		if row.PrincipalID == "vrl:p:a5" && row.Score > 0 {
-			t.Errorf("a5 (6 hops) scored %d — MaxHops=4 boundary violated", row.Score)
+		if row.PrincipalID == "vrl:p:a3" {
+			a3Score = row.Score
+			a3Found = true
 		}
 	}
+	if !a3Found || a3Score <= 0 {
+		t.Errorf("a3 (4 hops) should have non-zero score, got found=%v score=%d", a3Found, a3Score)
+	}
+
+	// a4 (5 hops) must NOT be present or must be zero.
+	for _, row := range table.Rows {
+		if row.PrincipalID == "vrl:p:a4" && row.Score > 0 {
+			t.Errorf("a4 (5 hops) scored %d — MaxHops=4 boundary violated", row.Score)
+		}
+	}
+}
+
+// TestProperty_WeightedRootScaling: a root with weight 0.5 initializes at 50,
+// not 100.
+func TestProperty_WeightedRootScaling(t *testing.T) {
+	engine := NewEngine()
+	root := "vrl:p:root"
+	now := time.Now()
+	roots := []Root{{ID: root, Weight: 0.5}}
+
+	claims := []*attestation.AttestationClaims{
+		claim(root, "vrl:p:a", 100, now),
+	}
+	table := engine.RunVeriRank(claims, nil, roots, now)
+
+	rootScore := scoreForRow(t, table, root)
+	if rootScore != 50 {
+		t.Errorf("weighted root (weight=0.5) should initialize at 50, got %d", rootScore)
+	}
+}
+
+// TestProperty_ExplicitBlacklist: a negative_incident from a high-trust issuer
+// sets blacklisted=true and score_reason=blacklisted.
+func TestProperty_ExplicitBlacklist(t *testing.T) {
+	engine := NewEngine()
+	root := "vrl:p:root"
+	target := "vrl:p:target"
+	now := time.Now()
+	roots := []Root{{ID: root, Weight: 1.0}}
+
+	claims := []*attestation.AttestationClaims{
+		claim(root, target, 100, now),       // target gets a positive score
+		claim(root, target, -100, now),      // root (score≥80) blacklists target
+	}
+	table := engine.RunVeriRank(claims, nil, roots, now)
+
+	for _, row := range table.Rows {
+		if row.PrincipalID == target {
+			if !row.Blacklisted {
+				t.Error("expected blacklisted=true for target")
+			}
+			if row.ScoreReason != ScoreReasonBlacklisted {
+				t.Errorf("expected score_reason=blacklisted, got %s", row.ScoreReason)
+			}
+			if row.Score != 0 {
+				t.Errorf("expected score=0 for blacklisted target, got %d", row.Score)
+			}
+			return
+		}
+	}
+	t.Fatal("target not found in score table")
 }
 ```
 
@@ -1153,22 +1250,32 @@ Expected: no errors.
 
 - [ ] **Step 5: Add a generated-code freshness check**
 
-Add to `scripts/gen-proto.sh` a `--check` mode that regenerates and diffs:
+Add a `--check` mode to `scripts/gen-proto.sh` that regenerates into a temp directory and diffs against the committed outputs without modifying them:
 
 ```bash
-# Append to scripts/gen-proto.sh:
+# Append to scripts/gen-proto.sh (before the final echo):
 if [ "${1:-}" = "--check" ]; then
-  cp "$OUT_DIR/trust.pb.go" /tmp/trust.pb.go.bak
-  cp "$OUT_DIR/trust_grpc.pb.go" /tmp/trust_grpc.pb.go.bak
-  # Regenerate
-  protoc --proto_path="$PROTO_DIR" --go_out="$OUT_DIR" --go_opt=paths=source_relative \
-    --go-grpc_out="$OUT_DIR" --go-grpc_opt=paths=source_relative "$PROTO_DIR/trust.proto"
-  if ! diff -q /tmp/trust.pb.go.bak "$OUT_DIR/trust.pb.go" || \
-     ! diff -q /tmp/trust_grpc.pb.go.bak "$OUT_DIR/trust_grpc.pb.go"; then
-    echo "FAIL: generated code is stale. Run ./scripts/gen-proto.sh and commit."
-    exit 1
-  fi
+  TMPDIR="$(mktemp -d)"
+  trap 'rm -rf "$TMPDIR"' EXIT
+
+  # Regenerate into the temp dir.
+  protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$TMPDIR" \
+    --go_opt=paths=source_relative \
+    --go-grpc_out="$TMPDIR" \
+    --go-grpc_opt=paths=source_relative \
+    "$PROTO_DIR/trust.proto"
+
+  # Diff against committed outputs.
+  for f in trust.pb.go trust_grpc.pb.go; do
+    if ! diff -q "$TMPDIR/$f" "$OUT_DIR/$f" >/dev/null 2>&1; then
+      echo "FAIL: $OUT_DIR/$f is stale. Run ./scripts/gen-proto.sh and commit."
+      exit 1
+    fi
+  done
   echo "OK: generated code is fresh."
+  exit 0
 fi
 ```
 
@@ -1229,19 +1336,20 @@ type server struct {
 // The first chunk MUST be a RunHeader; subsequent chunks are attestations,
 // principals, and roots in any order.
 func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic in RunVeriRank: %v", r)
-		}
-	}()
-
 	var (
-		evalTime   time.Time
-		claims     []*attestation.AttestationClaims
-		principals []trust.Principal
-		roots      []trust.Root
-		headerSeen bool
+		evalTime        time.Time
+		claims          []*attestation.AttestationClaims
+		principals      []trust.Principal
+		roots           []trust.Root
+		headerSeen      bool
+		seenPrincipals  = make(map[string]bool)
+		seenRoots       = make(map[string]bool)
 	)
+
+	// isNaN returns true if f is NaN. (math.IsNaN requires importing math,
+	// which we avoid here to keep the import list lean — NaN is the only
+	// value where f != f, so this check is sufficient.)
+	isNaN := func(f float64) bool { return f != f }
 
 	for {
 		chunk, err := stream.Recv()
@@ -1251,11 +1359,17 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 		if err != nil {
 			return status.Errorf(codes.Internal, "recv chunk: %v", err)
 		}
+		if chunk == nil || chunk.Payload == nil {
+			return status.Error(codes.InvalidArgument, "nil chunk payload")
+		}
 
 		switch p := chunk.Payload.(type) {
 		case *trustpb.RunChunk_Header:
 			if headerSeen {
 				return status.Error(codes.InvalidArgument, "duplicate RunHeader")
+			}
+			if p.Header == nil {
+				return status.Error(codes.InvalidArgument, "nil RunHeader")
 			}
 			if p.Header.EvaluationTimeUnix == 0 {
 				return status.Error(codes.InvalidArgument, "evaluation_time_unix is required")
@@ -1266,6 +1380,9 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			if !headerSeen {
 				return status.Error(codes.InvalidArgument, "header must be first chunk")
 			}
+			if p.Attestation == nil {
+				return status.Error(codes.InvalidArgument, "nil Attestation")
+			}
 			if p.Attestation.IssuerId == "" || p.Attestation.SubjectId == "" {
 				return status.Error(codes.InvalidArgument, "attestation issuer_id and subject_id are required")
 			}
@@ -1274,32 +1391,55 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			if !headerSeen {
 				return status.Error(codes.InvalidArgument, "header must be first chunk")
 			}
+			if p.Principal == nil {
+				return status.Error(codes.InvalidArgument, "nil Principal")
+			}
 			if p.Principal.Id == "" {
 				return status.Error(codes.InvalidArgument, "principal id is required")
 			}
-			// Validate trust_weight is in [0, 1]
-			if p.Principal.TrustWeight < 0 || p.Principal.TrustWeight > 1 {
-				return status.Errorf(codes.InvalidArgument, "principal %s trust_weight %f out of range [0,1]", p.Principal.Id, p.Principal.TrustWeight)
+			if seenPrincipals[p.Principal.Id] {
+				return status.Errorf(codes.InvalidArgument, "duplicate principal %s", p.Principal.Id)
+			}
+			seenPrincipals[p.Principal.Id] = true
+			// Validate entity_kind.
+			ek := trust.EntityKind(p.Principal.EntityKind)
+			switch ek {
+			case trust.EntityKindAgent, trust.EntityKindIssuer, trust.EntityKindBoth:
+			default:
+				return status.Errorf(codes.InvalidArgument, "principal %s invalid entity_kind %q", p.Principal.Id, p.Principal.EntityKind)
+			}
+			// Validate trust_weight is finite and in [0, 1].
+			tw := p.Principal.TrustWeight
+			if isNaN(tw) || tw < 0 || tw > 1 {
+				return status.Errorf(codes.InvalidArgument, "principal %s trust_weight %f is non-finite or out of range [0,1]", p.Principal.Id, tw)
 			}
 			principals = append(principals, trust.Principal{
 				ID:          p.Principal.Id,
-				EntityKind:  trust.EntityKind(p.Principal.EntityKind),
-				TrustWeight: p.Principal.TrustWeight,
+				EntityKind:  ek,
+				TrustWeight: tw,
 				IsBootstrap: p.Principal.IsBootstrap,
 			})
 		case *trustpb.RunChunk_Root:
 			if !headerSeen {
 				return status.Error(codes.InvalidArgument, "header must be first chunk")
 			}
+			if p.Root == nil {
+				return status.Error(codes.InvalidArgument, "nil Root")
+			}
 			if p.Root.Id == "" {
 				return status.Error(codes.InvalidArgument, "root id is required")
 			}
-			if p.Root.Weight < 0 || p.Root.Weight > 1 {
-				return status.Errorf(codes.InvalidArgument, "root %s weight %f out of range [0,1]", p.Root.Id, p.Root.Weight)
+			if seenRoots[p.Root.Id] {
+				return status.Errorf(codes.InvalidArgument, "duplicate root %s", p.Root.Id)
+			}
+			seenRoots[p.Root.Id] = true
+			w := p.Root.Weight
+			if isNaN(w) || w < 0 || w > 1 {
+				return status.Errorf(codes.InvalidArgument, "root %s weight %f is non-finite or out of range [0,1]", p.Root.Id, w)
 			}
 			roots = append(roots, trust.Root{
 				ID:     p.Root.Id,
-				Weight: p.Root.Weight,
+				Weight: w,
 			})
 		default:
 			return status.Error(codes.InvalidArgument, "unknown or empty chunk payload")
@@ -1310,14 +1450,69 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 		return status.Error(codes.InvalidArgument, "missing RunHeader chunk")
 	}
 
+	// Validate completeness: every root, every attestation issuer, and every
+	// attestation subject must have a streamed Principal row. The spec promises
+	// the complete global principal list — missing metadata must fail closed,
+	// not silently default to trust_weight=1.0.
+	principalSet := make(map[string]bool, len(principals))
+	for _, p := range principals {
+		principalSet[p.ID] = true
+	}
+	for _, r := range roots {
+		if !principalSet[r.ID] {
+			return status.Errorf(codes.InvalidArgument, "root %s has no streamed Principal row", r.ID)
+		}
+	}
+	issuerSet := make(map[string]bool)
+	for _, c := range claims {
+		issuerSet[c.Issuer] = true
+		if !principalSet[c.Issuer] {
+			return status.Errorf(codes.InvalidArgument, "attestation issuer %s has no streamed Principal row", c.Issuer)
+		}
+		if !principalSet[c.Subject] {
+			return status.Errorf(codes.InvalidArgument, "attestation subject %s has no streamed Principal row", c.Subject)
+		}
+	}
+	// Roots must be bootstrap principals with trust_weight = 1.0.
+	for _, r := range roots {
+		var found *trust.Principal
+		for i := range principals {
+			if principals[i].ID == r.ID {
+				found = &principals[i]
+				break
+			}
+		}
+		if found == nil {
+			continue // already errored above
+		}
+		if !found.IsBootstrap {
+			return status.Errorf(codes.InvalidArgument, "root %s is not a bootstrap principal", r.ID)
+		}
+		if found.TrustWeight != 1.0 {
+			return status.Errorf(codes.InvalidArgument, "root %s (bootstrap) must have trust_weight=1.0, got %f", r.ID, found.TrustWeight)
+		}
+	}
+
 	engine := trust.NewEngine()
 	table := engine.RunVeriRank(claims, principals, roots, evalTime)
 
+	// Stamp entity_kind from the streamed principals (the engine sets it
+	// from the principal list, but be defensive in case a scored node
+	// wasn't in the stream — which the validation above should prevent).
+	kindMap := make(map[string]string, len(principals))
+	for _, p := range principals {
+		kindMap[p.ID] = string(p.EntityKind)
+	}
+
 	pbRows := make([]*trustpb.ScoreRow, 0, len(table.Rows))
 	for _, row := range table.Rows {
+		ek := string(row.EntityKind)
+		if ek == "" {
+			ek = kindMap[row.PrincipalID] // stamp from streamed principal
+		}
 		pbRows = append(pbRows, &trustpb.ScoreRow{
 			PrincipalId: row.PrincipalID,
-			EntityKind:  string(row.EntityKind),
+			EntityKind:  ek,
 			Score:       int32(row.Score),
 			Blacklisted: row.Blacklisted,
 			ScoreReason: string(row.ScoreReason),
@@ -1349,7 +1544,9 @@ func protoAttestationToClaims(a *trustpb.Attestation) *attestation.AttestationCl
 			ExpiresAt: expiresAt,
 		},
 		VerilinkClaims: attestation.VerilinkClaims{
+			Type:            a.AttestationType,
 			TrustLevelDelta: int(a.TrustDelta),
+			ObservationID:   a.ObservationId,
 		},
 	}
 }
@@ -1357,12 +1554,6 @@ func protoAttestationToClaims(a *trustpb.Attestation) *attestation.AttestationCl
 // VerifyAttestation tries each candidate key against the JWS token.
 // Returns the verified_key_id that matched, plus all signed vli fields.
 func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyRequest) (*trustpb.VerifyResult, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic in VerifyAttestation: %v", r)
-		}
-	}()
-
 	if req.JwsToken == "" {
 		return &trustpb.VerifyResult{Valid: false, Error: "jws_token is required"}, nil
 	}
@@ -1435,12 +1626,6 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 
 // Fingerprint matches pkg/fingerprint.Generate exactly.
 func (s *server) Fingerprint(ctx context.Context, req *trustpb.FingerprintRequest) (*trustpb.Fingerprint, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic in Fingerprint: %v", r)
-		}
-	}()
-
 	fp, err := fingerprint.Generate(fingerprint.RequestData{
 		JA4:      req.Ja4,
 		Headers:  req.Headers,
@@ -1462,23 +1647,51 @@ Create `cmd/trust-engine/main.go`:
 package main
 
 import (
+	"context"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
 	trustpb "github.com/messagesgoel-blip/verilink/pkg/trustpb"
 )
+
+// newGRPCServer creates a gRPC server with panic recovery interceptors,
+// registers the TrustEngine + health services, and returns the server +
+// health service handle. Used by both production (main) and tests so the
+// interceptor + registration path is identical.
+func newGRPCServer() (*grpc.Server, *health.Server) {
+	grpcSrv := grpc.NewServer(
+		grpc.UnaryInterceptor(unaryPanicRecovery),
+		grpc.StreamInterceptor(streamPanicRecovery),
+	)
+	trustpb.RegisterTrustEngineServer(grpcSrv, &server{})
+
+	healthSrv := health.NewServer()
+	healthSrv.SetServingStatus("verilink.trust.v1.TrustEngine", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
+
+	return grpcSrv, healthSrv
+}
 
 func main() {
 	addr := os.Getenv("TRUST_ENGINE_ADDR")
 	if addr == "" {
 		addr = ":9091"
+	}
+	httpAddr := os.Getenv("TRUST_ENGINE_HTTP_ADDR")
+	if httpAddr == "" {
+		httpAddr = ":9092"
 	}
 
 	lis, err := net.Listen("tcp", addr)
@@ -1486,26 +1699,38 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 
-	grpcSrv := grpc.NewServer(
-		grpc.UnaryInterceptor(unaryPanicRecovery),
-		grpc.StreamInterceptor(streamPanicRecovery),
-	)
+	grpcSrv, _ := newGRPCServer()
 
-	// Register the trust engine service.
-	trustpb.RegisterTrustEngineServer(grpcSrv, &server{})
+	// HTTP /healthz endpoint (spec requires HTTP /healthz on all three services).
+	httpMux := http.NewServeMux()
+	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	httpSrv := &http.Server{Addr: httpAddr, Handler: httpMux}
+	go func() {
+		log.Printf("trust-engine HTTP /healthz on %s", httpAddr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("http: %v", err)
+		}
+	}()
 
-	// Register the gRPC health service.
-	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus("verilink.trust.v1.TrustEngine", healthpb.HealthCheckResponse_SERVING)
-	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
-
-	// Graceful shutdown on SIGTERM/SIGINT.
+	// Graceful shutdown on SIGTERM/SIGINT with a bounded timeout.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigCh
 		log.Printf("trust-engine shutting down...")
+
+		// Stop accepting new gRPC + HTTP connections.
 		grpcSrv.GracefulStop()
+
+		// Bound the HTTP shutdown to 10s.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
 	}()
 
 	log.Printf("trust-engine listening on %s", addr)
@@ -1533,6 +1758,11 @@ func streamPanicRecovery(srv interface{}, ss grpc.ServerStream, info *grpc.Strea
 	}()
 	return handler(srv, ss)
 }
+
+// shutDownLatch is a test helper that waits for GracefulStop to finish.
+// In production, main() exits when Serve returns. In tests, we need to
+// know the server has fully stopped before closing the listener.
+var shutDownLatch sync.WaitGroup
 ```
 
 - [ ] **Step 3: Write the contract tests**
@@ -1546,6 +1776,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net"
 	"testing"
 	"time"
@@ -1557,22 +1788,16 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// startTestServer starts a gRPC server on a random port and returns a client
-// + the raw connection (for health checks) + a cleanup func.
+// startTestServer starts a gRPC server on a random port using newGRPCServer
+// (same interceptors + registration as production) and returns a client +
+// the raw connection (for health checks) + a cleanup func.
 func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn, func()) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	grpcSrv := grpc.NewServer()
-	trustpb.RegisterTrustEngineServer(grpcSrv, &server{})
-
-	// Register health service too.
-	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus("verilink.trust.v1.TrustEngine", healthpb.HealthCheckResponse_SERVING)
-	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
-
+	grpcSrv, _ := newGRPCServer()
 	go grpcSrv.Serve(lis)
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -1603,6 +1828,30 @@ func TestServer_RunVeriRank_3Hop(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	// Principals (all 4 entities must be streamed — the spec promises the
+	// complete global principal list, and the server rejects missing metadata).
+	principals := []struct {
+		id, kind string
+		weight   float64
+		bootstrap bool
+	}{
+		{"vrl:p:root", "issuer", 1.0, true},
+		{"vrl:p:a", "both", 1.0, false},
+		{"vrl:p:b", "both", 1.0, false},
+		{"vrl:p:c", "agent", 1.0, false},
+	}
+	for _, p := range principals {
+		if err := stream.Send(&trustpb.RunChunk{
+			Payload: &trustpb.RunChunk_Principal{
+				Principal: &trustpb.Principal{
+					Id: p.id, EntityKind: p.kind, TrustWeight: p.weight, IsBootstrap: p.bootstrap,
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Root
@@ -1643,15 +1892,96 @@ func TestServer_RunVeriRank_3Hop(t *testing.T) {
 
 	// C must score non-zero (3-hop transitive propagation)
 	var cScore int32
+	var cKind string
 	for _, row := range table.Rows {
 		if row.PrincipalId == "vrl:p:c" {
 			cScore = row.Score
+			cKind = row.EntityKind
 		}
 	}
 	if cScore <= 0 {
 		t.Fatalf("3-hop via gRPC FAILED: C scored %d (expected >0)", cScore)
 	}
-	t.Logf("3-hop gRPC OK: C scored %d", cScore)
+	if cKind != "agent" {
+		t.Errorf("expected C entity_kind=agent, got %s", cKind)
+	}
+	t.Logf("3-hop gRPC OK: C scored %d kind=%s", cScore, cKind)
+}
+
+func TestServer_RunVeriRank_MissingPrincipalRejected(t *testing.T) {
+	client, _, cleanup := startTestServer(t)
+	defer cleanup()
+
+	now := time.Now()
+	stream, err := client.RunVeriRank(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
+	}})
+	// Send root but NO principal for it — should be rejected.
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Root{
+		Root: &trustpb.Root{Id: "vrl:p:root", Weight: 1.0},
+	}})
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Attestation{
+		Attestation: &trustpb.Attestation{
+			IssuerId: "vrl:p:root", SubjectId: "vrl:p:a",
+			TrustDelta: 100, IssuedAtUnix: now.Unix(), AttestationType: "transaction_summary",
+		},
+	}})
+
+	_, err = stream.CloseAndRecv()
+	if err == nil {
+		t.Fatal("expected error for missing principal metadata, got nil")
+	}
+}
+
+func TestServer_RunVeriRank_DuplicateHeader(t *testing.T) {
+	client, _, cleanup := startTestServer(t)
+	defer cleanup()
+
+	now := time.Now()
+	stream, err := client.RunVeriRank(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
+	}})
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
+	}}); err == nil {
+		// Some gRPC impls buffer; the error surfaces on CloseAndRecv.
+	}
+	_, err = stream.CloseAndRecv()
+	if err == nil {
+		t.Fatal("expected error for duplicate header, got nil")
+	}
+}
+
+func TestServer_RunVeriRank_NaNWeight(t *testing.T) {
+	client, _, cleanup := startTestServer(t)
+	defer cleanup()
+
+	now := time.Now()
+	stream, _ := client.RunVeriRank(context.Background())
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
+	}})
+	// NaN passes simple < 0 || > 1 comparisons, but our isNaN check catches it.
+	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Principal{
+		Principal: &trustpb.Principal{
+			Id: "vrl:p:x", EntityKind: "agent",
+			TrustWeight: float64(0) / float64(0), // NaN
+		},
+	}})
+	_, err := stream.CloseAndRecv()
+	if err == nil {
+		t.Fatal("expected error for NaN weight, got nil")
+	}
 }
 
 func TestServer_VerifyAttestation(t *testing.T) {
@@ -1699,6 +2029,46 @@ func TestServer_VerifyAttestation(t *testing.T) {
 	}
 	if res.Payload.ObservationId != "obs-123" {
 		t.Errorf("expected observation_id obs-123, got %s", res.Payload.ObservationId)
+	}
+	// Assert facts_json contains the signed facts.
+	var facts map[string]interface{}
+	if err := json.Unmarshal(res.Payload.FactsJson, &facts); err != nil {
+		t.Fatalf("unmarshal facts_json: %v", err)
+	}
+	if facts["count"] != float64(42) {
+		t.Errorf("expected facts.count=42, got %v", facts["count"])
+	}
+}
+
+func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
+	client, _, cleanup := startTestServer(t)
+	defer cleanup()
+
+	// Send a token that's not even valid base64 — should not crash the server.
+	res, err := client.VerifyAttestation(context.Background(), &trustpb.VerifyRequest{
+		JwsToken: "!!!not-a-jwt!!!",
+		CandidateKeys: []*trustpb.KeyCandidate{
+			{KeyId: "k1", PublicKey: make([]byte, ed25519.PublicKeySize)},
+		},
+	})
+	if err != nil {
+		// gRPC may return an error or a VerifyResult{Valid:false}; both are
+		// acceptable as long as the server didn't crash.
+		return
+	}
+	if res.Valid {
+		t.Error("expected invalid for garbage token")
+	}
+	// If we get here, the server recovered and returned a result — verify
+	// it didn't crash by making a second call.
+	res2, err := client.Fingerprint(context.Background(), &trustpb.FingerprintRequest{
+		Ja4: "test", Protocol: "HTTP/1.1",
+	})
+	if err != nil {
+		t.Fatal("server crashed after panic — second call failed")
+	}
+	if res2.Sha256 == "" {
+		t.Error("second call returned empty fingerprint — server may have crashed")
 	}
 }
 
@@ -1806,7 +2176,7 @@ func TestServer_Health(t *testing.T) {
 - [ ] **Step 5: Run all contract tests**
 
 Run: `go test ./cmd/trust-engine/ -v`
-Expected: All PASS (3-hop via gRPC, VerifyAttestation, VerifyAttestation_WrongKeyFirst, VerifyAttestation_MalformedKey, Fingerprint, Health).
+Expected: All PASS (3-hop via gRPC with entity_kind assertions, MissingPrincipalRejected, DuplicateHeader, NaNWeight, VerifyAttestation with facts_json, VerifyAttestation_WrongKeyFirst, VerifyAttestation_MalformedKey, VerifyAttestation_PanicRecovery, Fingerprint, Health).
 
 - [ ] **Step 6: Commit**
 
@@ -1841,26 +2211,37 @@ Expected: no issues.
 Run: `./scripts/gen-proto.sh --check`
 Expected: "OK: generated code is fresh."
 
-- [ ] **Step 5: Push the branch + open a PR**
+- [ ] **Step 5: Push the branch + create a PR using the mandated pr-create flow**
 
 ```bash
 git push -u origin feat/engine-trust-engine
-gh pr create --title "feat: VeriRank engine fixes + trust-engine gRPC server" \
-  --body "Implements Plan 1 of the VeriLink productization spec.
+```
+
+Use the `pr-create` command (per the global AGENTS.md PR merge procedure) to open the PR with the following body:
+
+**Title:** `feat: VeriRank engine fixes + trust-engine gRPC server`
+
+**Body:**
+```
+Implements Plan 1 of the VeriLink productization spec.
 
 - VeriRank: determinism (evaluation_time), trust_weight, weighted roots (Root { id, weight }), blacklisted + score_reason output, sorted rows
 - Call-local computation (no mutation of e.edges in RunVeriRank)
 - 3-hop transitive contract test (guards unified namespace)
-- Property-based tests (testing/quick): unrooted, monotonicity, decay, permutation invariance, trust_weight, determinism, hop bounds
+- Property-based tests (testing/quick): unrooted, monotonicity, decay, permutation invariance, trust_weight, determinism, hop bounds, weighted-root scaling, explicit blacklist
 - VerilinkClaims extended with schema_version, visibility, observation_id (backward-compatible)
 - gRPC server (cmd/trust-engine) wrapping pkg/trust, attestation, fingerprint
-- gRPC health service + graceful shutdown + panic recovery
-- VerifyAttestation returns all signed vli fields; wrong-key-first candidate selection tested
+- HTTP /healthz + gRPC health service + bounded graceful shutdown + panic recovery interceptors
+- VerifyAttestation returns all signed vli fields; wrong-key-first, malformed-key, panic-recovery tests
+- Strict stream validation: nil chunks, duplicate header/principal/root, NaN weights, missing principal metadata, entity_kind validation, bootstrap trust_weight=1.0
 - VR-002 local baseline benchmark (mean, not p99 — p99 is the nightly k6 gate)
 - Pinned grpc v1.65.0 + protobuf v1.34.2 (Go 1.22 compatible)
+- Generated-code freshness check (mktemp + diff)
 
-Spec: docs/superpowers/specs/2026-07-25-verilink-productization-design.md"
+Spec: docs/superpowers/specs/2026-07-25-verilink-productization-design.md
 ```
+
+After `pr-create` returns the PR URL, use `pr-watch-status` to monitor CI checks.
 
 - [ ] **Step 6: Request CodeRabbit review (batch once per task, not per commit)**
 
@@ -1883,24 +2264,13 @@ Address any CodeRabbit findings, then merge the PR once approved. Do not squash 
 
 **Type consistency:** `ScoreRow`, `ScoreTable`, `Root`, `Issuer`, `Principal` defined in Task 2, used consistently in Tasks 3–4 and mapped to proto in Task 5. `RunVeriRank(claims, principals, roots, evaluationTime) ScoreTable` signature consistent across Tasks 3–4 and the gRPC server in Task 7. `VerilinkClaims` extended fields (`SchemaVersion`, `Visibility`, `ObservationID`) populated in `VerifyAttestation` (Task 7).
 
-**Round-1 review corrections applied:**
-1. ✓ Stream-receive loop uses `errors.Is(err, io.EOF)` (not `err == nil`)
-2. ✓ Legacy `CalculateScores` builds scores map from `e.rootsOfTrust` (not empty), no unused locals
-3. ✓ Output rows sorted by `PrincipalID` (deterministic serialization)
-4. ✓ Benchmark uses existing `NewEdgeVerifierProxy(target, ts)` + `verifier.NewMockTrustStore()` + computed fingerprint; awk reads field 3 (float-safe)
-5. ✓ grpc/protobuf pinned to v1.65.0/v1.34.2 (Go 1.22 compatible), no `@latest`
-6. ✓ `entity_kind` stamped from streamed `Principal` rows via `kindByDID` map
-7. ✓ `VerifyAttestation` returns `schema_version`, `visibility`, `observation_id` from extended `VerilinkClaims`
-8. ✓ `testing/quick` for property tests; unrooted test asserts `len(table.Rows) == 0`
-9. ✓ `startTestServer` returns `*grpc.ClientConn` for health checks; health service registered
-10. ✓ `ReplaceEdgesAndCalculate` preserved for `SyncService`
-11. ✓ `RunVeriRank` computes from call-local state (no `e.edges` mutation)
-12. ✓ Previous-hop/next-hop snapshots prevent over-propagation within a hop
-13. ✓ Panic recovery via interceptors
-14. ✓ Generated-code freshness check (`--check` mode)
-15. ✓ Default `trust_weight = 1.0` for principals absent from the stream documented in proto comment
-16. ✓ CodeRabbit batched once per task, not per commit
-17. ✓ Spec residue at line 910 (`expired` in engine enum) fixed
+**Round-2 review corrections applied:**
+1. ✓ All imports complete (`context`, `codes`, `status`, `grpc/health` in main.go); handler-local recovery defers removed (interceptors handle it); `newGRPCServer()` shared by prod + tests; HTTP `/healthz` added alongside gRPC health; bounded graceful shutdown (10s timeout on HTTP)
+2. ✓ Generated-code freshness check uses `mktemp -d` + `trap` cleanup + diff against committed (no modification of committed outputs)
+3. ✓ Strict validation: nil chunks rejected, entity_kind validated (`agent|issuer|both`), NaN weights caught via `f != f` check, duplicate principal/root rejected, every root/issuer/subject must have a streamed Principal row, roots must be bootstrap with `trust_weight=1.0`; implicit `trust_weight=1.0` only in the legacy path
+4. ✓ Property tests: decay uses `uint16 % 366` (bounded, no skips); hop test asserts 4-hop exists + 5-hop does NOT; weighted-root scaling test; explicit blacklist test; gRPC 3-hop sends Principal chunks + asserts entity_kind; missing-principal/duplicate-header/NaN-weight/panic-recovery tests; facts_json + jti assertions
+5. ✓ `protoAttestationToClaims` preserves `attestation_type` + `observation_id`; `ReplaceEdgesAndCalculate` scores the sanitized edge snapshot (not original claims); `jwt/v5` import instruction added
+6. ✓ Benchmark script: match guard + `trap` cleanup; `gh pr create` replaced with `pr-create` + `pr-watch-status`
 
 **Not in this plan (covered by subsequent plans):**
 - Control-plane TS foundation + data model (spec steps 6–7) → Plan 2
