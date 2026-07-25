@@ -7,7 +7,7 @@ option go_package = "github.com/messagesgoel-blip/verilink/pkg/trustpb;trustpb";
 service TrustEngine {
   rpc RunVeriRank(stream RunChunk) returns (ScoreTable);
   rpc VerifyAttestation(VerifyRequest) returns (VerifyResult);
-  rpc Fingerprint(FingerprintRequest) returns (Fingerprint);
+  rpc GetFingerprint(FingerprintRequest) returns (Fingerprint);
 }
 
 // RunVeriRank: client-streamed input to stay within gRPC message limits.
