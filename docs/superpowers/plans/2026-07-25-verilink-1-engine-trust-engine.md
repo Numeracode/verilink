@@ -2462,7 +2462,7 @@ Address any CodeRabbit findings, then merge the PR once approved. Do not squash 
 2. ✓ Fail-closed weight: `propagate` defaults missing principals to `weight = 0.0` (not 1.0). Legacy wrappers explicitly construct `Principal{TrustWeight: 1.0}` for every issuer.
 3. ✓ Proto `Principal` comment rewritten: "Every root, attestation issuer, and attestation subject MUST have a streamed Principal row — the server fail-closes otherwise. The trust_weight=1.0 default exists only in the legacy in-process path."
 4. ✓ Freshness check dispatches on `--check` BEFORE normal generation (no overwrite of committed outputs).
-5. ✓ Unused `log` import removed from `server.go`; NaN test uses `math.NaN()` (not division by zero); panic recovery test verifies server survives + second call works; `jti` round-trip test added (asserts empty for v1 Sign without ID).
+5. ✓ Unused `log` import removed from `server.go`; NaN test uses `math.NaN()` (not division by zero); panic recovery test exercises interceptors directly with a deliberate panic; `jti` round-trip test signs with `RegisteredClaims.ID = "jti-test-abc123"` and asserts the value returns.
 6. ✓ Shutdown: concurrent gRPC + HTTP with `sync.WaitGroup`; gRPC `GracefulStop` bounded by 10s timer → `Stop()`; health set to `NOT_SERVING` first; `shutDownLatch` removed; HTTP `/healthz` test added.
 7. ✓ Decay property test uses `<=` for generated integer scores; separate `TestProperty_DecayStrictDecrease` asserts strict `<` for known 365-day age.
 8. ✓ Blacklist applies unconditionally in `propagate` (no `if nextScores[subject] != 0` guard); `TestProperty_BlacklistWithoutPriorPositive` tests the no-prior-positive case.
