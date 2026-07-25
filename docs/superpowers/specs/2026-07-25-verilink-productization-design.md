@@ -1,7 +1,7 @@
 # VeriLink Productization Design
 
-- **Status:** Draft v2 — review round 1 findings incorporated
-- **Date:** 2026-07-25 (v2: 2026-07-25)
+- **Status:** Draft v3 — review round 2 findings incorporated
+- **Date:** 2026-07-25 (v3: 2026-07-25)
 - **Owner:** Sanjay
 - **Repo:** `/srv/storage/repo/VeriLink/`
 - **Related specs:** [`docs/specs/attestation_schema.md`](../../specs/attestation_schema.md), [`docs/specs/fingerprinting.md`](../../specs/fingerprinting.md), [`docs/specs/trust_graph.md`](../../specs/trust_graph.md)
@@ -11,7 +11,8 @@
 
 ## Change log
 
-- **v2:** Resolves round-1 blocking findings: global trust graph (B1), gRPC fingerprint contract (B2), engine output contract (B3); major findings on Rust scope (M1), decision telemetry (M2), unknown-fingerprint path (M3), Sybil resistance (M4), JA4/TLS termination (M5), jti dedup (M6); minor schema corrections; locks all seven Section 15 questions; corrects the n8n error-notification misattribution; adds abuse controls (Round-1 finding 6), identity assurance levels (finding 2), edge sync contract (finding 5), and the global-vs-tenant partition.
+- **v2:** Global trust graph; corrected gRPC fingerprint contract; honest engine-work accounting; Go edge in v1 (Rust deferred); decision/audit split; token-digest dedup; identity assurance levels; Sybil resistance; JA4/TLS termination; locked Section 15 questions.
+- **v3:** Resolves round-2 blocking findings: request-authentication protocol (HTTP Message Signatures, RFC 9421/9530); stable VeriLink subject IDs replacing `did:key` as the canonical identifier (rotation-capable); executable-schema corrections (composite FKs, `bootstrap_registry` split, `is_bootstrap` consistency, issuer ownership, unknown fingerprints excluded from aliases); score semantics (`blacklisted` + `score_reason`, not inferred from 0); unified sync event log covering scores + aliases + keys + policies + heartbeats; privacy deletion model (deactivate + legal-basis retention, not tombstoning); WAL drop-oldest with counters (not backpressure that blocks the data path); aggregate + sampled decision ingestion; `MAX_SNAPSHOT_AGE` keyed to last SSE heartbeat (default 5 min, tunable 1–30 min); stepwise bootstrap de-emphasis with rollback and a counterfactual removal report (manual, metric-gated); OCI region corrected to `ca-toronto-1`; API-key format locked to 64 lowercase hex; `below_threshold_action` rename; Go baseline benchmark as the first implementation gate; Clerk OAuth Application + Authorization Code/PKCE specified (no session SDK); versioned per-type facts schemas with `vli.schema_version`; attestation-level `visibility: participants|public` (no field-level `_private`).
 
 ---
 
@@ -23,7 +24,7 @@ This document specifies how VeriLink becomes a proper product: an **open-source 
 
 The two-sided network is cold-started by VeriLink itself: a curated root-of-truth registry of known agent frameworks and public API providers, seeded at launch, de-emphasized as organic attestations take over.
 
-The product is a single monorepo with four deployable surfaces: a Go edge verifier (v1) with a Rust edge rewrite deferred to post-v1 behind a parity harness, a TypeScript control plane and dashboard (reusing the hardened Numera/Whimsy stack — Express, Postgres, Redis, Radix, TanStack), a Go trust-engine gRPC service wrapping the existing verified algorithms, and the existing Go plus Node clients (npm-published). Whimsy is the first reference customer: its `api/src/shared/verilink.js` module already integrates with the attestation API and becomes the first seeded issuer.
+The product is a single monorepo with four deployable surfaces: a Go edge verifier (v1) with a Rust edge rewrite deferred to post-v1 behind a parity harness, a TypeScript control plane and dashboard (reusing the hardened Numera/Whimsy stack — Express, Postgres, Redis, Radix, TanStack), a Go trust-engine gRPC service wrapping the existing verified algorithms, and the existing Go plus Node clients (npm-published). Whimsy is the first reference customer: its `api/src/shared/verilink.js` module already integrates with the attestation API and becomes the first seeded issuer. Codero is the second reference customer, guarding a narrow agent-ingest endpoint (`POST /memory/observations`) with an OpenCode/Codex session signing requests via the new HTTP-signature protocol.
 
 The trust graph is **global**, not tenant-scoped. Agents, issuers, attestations, and canonical network scores are shared across the network. Tenants are a billing, ownership, API-key, and policy boundary — not a visibility boundary. One network-wide VeriRank run produces canonical scores; per-tenant thresholds and actions are applied as a policy-layer overlay at sync and decision time.
 
@@ -37,13 +38,13 @@ The trust protocol for the agentic economy. An open-source toolkit and a hosted 
 
 ### 2.2 The two-sided network
 
-**Providers** are API platforms that receive agentic traffic. They run the Go edge verifier in front of their API. The verifier fingerprints inbound requests, queries a local cache of trust scores synced from the hosted graph, and allows or denies the request before it reaches the application. Providers pay for the hosted control plane: trust scores, dashboards, the sync API, policy configuration, and audit.
+**Providers** are API platforms that receive agentic traffic. They run the Go edge verifier in front of their API. The verifier verifies the inbound request's HTTP Message Signature (RFC 9421), derives the agent's key hash from the verified signature, resolves the canonical network identity, queries a local cache of trust scores synced from the hosted graph, and allows or denies the request before it reaches the application. Providers pay for the hosted control plane: trust scores, dashboards, the sync API, policy configuration, and audit.
 
-**Agent builders** are anyone shipping an autonomous agent. They register their agent's **cryptographic identity** (a public key and DID) with VeriLink, receive attestations from counterparties who observe the agent's behavior, and carry a portable reputation across the network. A free tier seeds this side of the network; a paid tier provides verified reputation, higher attestation volume, and an SLA.
+**Agent builders** are anyone shipping an autonomous agent. They register their agent's **stable VeriLink identifier** (`vrl:agent:<uuid>`) with VeriLink, attach one or more public keys (each expressed as a `did:key`), and the agent authenticates its requests using HTTP Message Signatures with a `kid` identifying the signing key. Counterparties attest to the agent's behavior; the agent carries a portable reputation across the network. A free tier seeds this side of the network; a paid tier provides verified reputation, higher attestation volume, and an SLA.
 
 ### 2.3 The cold-start wedge
 
-A two-sided trust network dies if it launches empty. VeriLink seeds a root-of-truth registry at launch: a curated set of known agent frameworks (with their published public keys, not transport-derived fingerprints), public API providers acting as issuers, and VeriLink's own bootstrap issuer. Providers see a non-empty graph on day one. Agent builders see value in registering because providers are already querying the graph. VeriLink's bootstrap issuer is gradually de-emphasized as organic attestations take over.
+A two-sided trust network dies if it launches empty. VeriLink seeds a root-of-truth registry at launch: a curated set of known agent frameworks (with their published public keys), public API providers acting as issuers, and VeriLink's own bootstrap issuer. Providers see a non-empty graph on day one. Agent builders see value in registering because providers are already querying the graph. VeriLink's bootstrap issuer is gradually de-emphasized — manually, metric-gated — as organic attestations take over (see 6.1).
 
 ### 2.4 The moat
 
@@ -59,25 +60,27 @@ The trust graph data accrues only to the hosted network. The open-source toolkit
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Productization model | Open-source toolkit + hosted SaaS | Tailscale/Snyk model; fits existing OSS foundation and trust-graph network effects |
-| Primary buyer | Two-sided network | Long-term moat; both providers and agent builders interact with the hosted graph |
-| v1 scope | Full control plane + hardened OSS | Both sides onboard from day one; truest to the two-sided vision |
-| Trust graph partitioning | **Global graph; tenant-scoped policy/ownership only** | A tenant-scoped graph contradicts the portable-reputation moat. Canonical scores are network-wide; tenants apply thresholds as a policy overlay. |
-| Agent canonical identity | **Public-key-backed DID; observed fingerprints are aliases** | Transport fingerprints (JA4/UA) are unstable across networks. The durable identity anchor is the agent's public key. |
-| Edge stack (v1) | **Go (the existing, proven edge-verifier)** | ROADMAP `VR-002` is already marked complete: the Go proxy demonstrably meets 10k req/s at <1ms overhead. Rust is an implementation detail no customer buys; defer to post-v1 behind the parity harness. |
-| Edge stack (post-v1) | Rust rewrite behind FFI parity harness | Performance headroom and memory footprint; only after the harness proves byte-identical fingerprints. |
+| Productization model | Open-source toolkit + hosted SaaS | Tailscale/Snyk model |
+| Primary buyer | Two-sided network | Long-term moat |
+| v1 scope | Full control plane + hardened OSS | Both sides onboard from day one |
+| Trust graph partitioning | **Global graph; tenant-scoped policy/ownership only** | Canonical scores are network-wide; tenants apply thresholds as a policy overlay |
+| Agent canonical identity | **Stable VeriLink ID (`vrl:agent:<uuid>`); public keys attached as `did:key` verification methods** | `did:key` is derived from its key and cannot rotate; a stable ID supports key rotation/history while keys remain `did:key`-expressed |
+| Request authentication | **HTTP Message Signatures (RFC 9421) + Content-Digest (RFC 9530)** | Registration proves key control once; every request must prove possession. `key_hash` is derived after verification, never caller-supplied |
+| Edge stack (v1) | **Go (the existing edge-verifier), gated on a fresh baseline benchmark** | ROADMAP `VR-002` is marked complete but no benchmark artifact exists in the repo; the first implementation step is to produce one and revisit if it fails |
+| Edge stack (post-v1) | Rust rewrite behind FFI parity harness | Only after the harness proves byte-identical fingerprints |
 | Control-plane stack | TypeScript (reusing Numera/Whimsy) | Maximal reuse of hardened auth, RBAC, audit, Redis, Postgres, frontend kit |
 | Trust-core algorithms | Stay Go, exposed via gRPC | Avoids a third reimplementation of verified trust math |
-| Graph cold-start | VeriLink-seeded root of trust | Empty graphs kill adoption; VeriLink bootstraps, then de-emphasizes |
+| Graph cold-start | VeriLink-seeded root of trust | Empty graphs kill adoption |
 | Repo structure | Single monorepo | Small team; one CI, one version, atomic releases |
-| OIDC provider | **Clerk, implemented against generic OIDC (`openid-client`)** | Clerk for the hosted product; generic OIDC keeps self-host pluggable (Keycloak/Authentik) with one code path. Not the Clerk SDK. |
-| Billing | **Stripe Billing, fixed-tier subscriptions in v1** | Standard B2B SaaS; reuse Whimsy/Numera patterns. Defer metered/usage billing. |
-| Docs generator | **Docusaurus** | Aligns with React/TypeScript skills; versioned docs, MDX, OpenAPI rendering |
-| Hosted region | **OCI Toronto (us-ashburn-1 or primary OCI region)** | Co-locates with Whimsy/Codero; eliminates cross-cloud egress; single-region accepted in Section 14 |
-| Static edge binary | **Yes** | Linux x86_64 and aarch64, statically linked (CGO_ENABLED=0), systemd unit, sample config, checksums, SBOM, signed releases |
-| Graph visualization (v1) | **Read-only summaries only** | Node/edge counts, top issuers, path summary cards. Interactive `@xyflow/react` explorer deferred to post-v1. |
-| Reputation badge | **Post-v1** | Marketing surface, not a trust surface. v1 focuses on the provider allow/deny loop. |
-| Challenge action | **Cut from v1** | No challenge format/lifecycle is designed. v1 is allow/deny only. |
+| OIDC provider | **Clerk via OAuth Application + Authorization Code/PKCE + Account Portal, implemented against generic OIDC (`openid-client`)** | Clerk for the hosted product; generic OIDC keeps self-host pluggable. Not the Clerk session SDK |
+| Billing | Stripe Billing, fixed-tier subscriptions in v1 | Standard B2B SaaS; reuse Whimsy/Numera patterns. Defer metered billing |
+| Docs generator | Docusaurus | Aligns with React/TypeScript skills; versioned docs, MDX, OpenAPI rendering |
+| Hosted region | **OCI `ca-toronto-1` (Toronto)** | Co-locates with Whimsy/Codero; single region accepted in Section 14 |
+| Static edge binary | Yes | Linux x86_64 and aarch64, `CGO_ENABLED=0`, systemd unit, sample config, checksums, SBOM, signed releases |
+| Graph visualization (v1) | Read-only summaries only | Node/edge counts, top issuers. Interactive `@xyflow/react` explorer deferred to post-v1. Path-summary cards removed (require hop/contribution data the v1 engine cuts) |
+| Reputation badge | Post-v1 | Marketing surface, not a trust surface |
+| Challenge action | Cut from v1 | No format/lifecycle designed. v1 is allow/deny only |
+| Bootstrap de-emphasis | **Manual, metric-gated in v1** | ≥3 independent verified organic issuers, ≥80% organic weighted contribution for 30 days, counterfactual removal report, then stepwise weight reduction with rollback. Not automatic |
 
 ---
 
@@ -89,326 +92,421 @@ The trust graph data accrues only to the hosted network. The open-source toolkit
 verilink/
 ├── pkg/                    # Go — shared trust core (existing, hardened)
 │   ├── fingerprint/        # map-based header canonicalization + JA4 + key hash (existing)
-│   ├── attestation/        # JWS issue/verify, Ed25519 (existing)
-│   ├── trust/              # VeriRank algorithm (existing) + graph store interface
+│   ├── attestation/        # JWS issue/verify, Ed25519 (existing); v1 adds kid + schema_version
+│   ├── trust/              # VeriRank algorithm (existing) + determinism/trust_weight fixes
 │   └── verifier/           # trust store interface (existing)
 ├── cmd/                    # Go binaries
 │   ├── trust-engine/       # NEW: gRPC server exposing pkg/* to TS control plane
-│   ├── edge-verifier/      # v1 edge (hardened from existing; TLS termination, RLS-safe cache)
+│   ├── edge-verifier/      # v1 edge (hardened: HTTP Message Signatures, sync client, WAL)
 │   ├── attestation-service/# deprecated after TS control plane ships
 │   └── keygen/             # kept
 ├── edge-rs/                # Rust — DEFERRED to post-v1 (parity harness only in v1)
 │   └── ffi/                # v1: cbindgen bindings for Go/Rust parity tests only
 ├── control-plane/          # TS — NEW, adapts Whimsy api/ patterns
 │   ├── src/
-│   │   ├── db/             # adapt whimsy api/src/db (client, migrate, transaction)
-│   │   ├── middleware/     # adapt: auth (API key + HMAC), rateLimit, audit
-│   │   ├── authz/          # adapt: RBAC (actions, policies, grants, decision)
+│   │   ├── db/             # adapt whimsy api/src/db
+│   │   ├── middleware/     # adapt: auth (API key + HMAC), oidc, rateLimit, audit
+│   │   ├── authz/          # adapt: RBAC
 │   │   ├── shared/         # adapt: logger, redis, apiKeyRequestActivity, encryption, openapi
 │   │   ├── domains/
-│   │   │   ├── tenant/     # multi-tenant onboarding, memberships, quotas
+│   │   │   ├── tenant/     # onboarding, memberships, quotas
 │   │   │   ├── registry/   # agent + issuer registry (global graph)
 │   │   │   ├── graph/      # attestation store (global); calls trust-engine gRPC for VeriRank
-│   │   │   ├── sync/       # trust-score sync API for edge (snapshot + SSE)
-│   │   │   ├── bootstrap/  # VeriLink root-of-truth seeder
-│   │   │   ├── policy/     # per-tenant thresholds and actions (overlay on global scores)
+│   │   │   ├── sync/       # sync event log + snapshot + SSE
+│   │   │   ├── bootstrap/  # root-of-truth seeder
+│   │   │   ├── policy/     # per-tenant thresholds and actions (overlay)
 │   │   │   ├── billing/    # Stripe subscriptions, webhook dedup, entitlements
-│   │   │   └── events/     # decision-event ingestion (separate from audit_log)
+│   │   │   └── events/     # decision-event ingestion (aggregate + sampled)
 │   │   └── index.js
 │   ├── migrations/         # SQL migrations (whimsy-style numbered dirs)
 │   └── package.json
 ├── dashboard/              # TS — Vite + Radix + TanStack (Numera/Whimsy kit)
-│   ├── src/
-│   ├── package.json
-│   ├── components.json
-│   └── tailwind.config.ts
 ├── client/
-│   ├── go/                 # existing Go client (updated for hosted URL)
-│   ├── node/               # npm-published as @verilink/node, with TS types
-│   └── rust/               # deferred with edge-rs; v1 ships Go + Node only
+│   ├── go/                 # existing Go client + v1 HTTP Message Signature signing
+│   ├── node/               # npm-published as @verilink/node, with TS types + signing
+│   └── rust/               # deferred with edge-rs
 ├── deploy/
-│   ├── docker/             # Dockerfile.edge, Dockerfile.control-plane, Dockerfile.trust-engine,
-│   │                       # docker-compose.self-host.yml
-│   ├── helm/               # Helm chart (configurable topology — see 4.2)
+│   ├── docker/             # Dockerfiles + docker-compose.self-host.yml
+│   ├── helm/               # Helm chart (configurable topology)
 │   └── systemd/            # verilink-edge.service unit template + sample config
-├── docs/                   # Docusaurus site (schema refs, quickstarts, integration guides)
+├── docs/                   # Docusaurus site
+│   ├── specs/              # versioned facts JSON Schemas (transaction_summary@1, etc.)
 │   └── superpowers/specs/  # this document
 └── scripts/
-    ├── dev-up.sh           # local dev orchestration
-    └── parity-check.sh     # cross-language fingerprint parity (Go vs Rust harness)
+    ├── dev-up.sh
+    ├── benchmark-baseline.sh   # Go VR-002 baseline — first implementation gate
+    └── parity-check.sh         # Go-vs-Rust parity (post-v1 gate for Rust graduation)
 ```
 
 ### 4.2 Deployable components
 
 | Component | Language | Port | Role |
 |---|---|---|---|
-| `edge-verifier` (v1) | Go | 8080 (data), 9090 (admin) | Reverse proxy. Fingerprints inbound requests, looks up local trust cache, allow/deny, proxy to backend. Pulls score+policy snapshot from control-plane sync API. |
-| `control-plane` | TypeScript (Express) | internal HTTP behind ingress; calls gRPC to trust-engine | Multi-tenant API: agent and issuer registry, attestation submission and verification, trust-score sync endpoint, policy configuration, API keys, onboarding, billing webhooks. Exposes REST to clients; the "443" is the ingress, not the process. |
-| `trust-engine` | Go (gRPC) | 9091 | Stateless VeriRank runner + attestation JWS verify + fingerprint parity check. Called by the control plane. Scales horizontally. |
+| `edge-verifier` (v1) | Go | 8080 (data), 9090 (admin) | Reverse proxy. Verifies HTTP Message Signature, derives key hash, resolves canonical identity, looks up local trust cache, allow/deny, proxy to backend. Pulls sync event stream from control plane. |
+| `control-plane` | TypeScript (Express) | internal HTTP behind ingress; calls gRPC to trust-engine | Multi-tenant API: agent/issuer registry, attestation submission and verification, sync event log + snapshot, policy, API keys, onboarding, billing webhooks. |
+| `trust-engine` | Go (gRPC) | 9091 | Stateless VeriRank runner + attestation JWS verify + fingerprint parity check. |
 | `dashboard` | TypeScript (Vite SPA) | served by control-plane | Provider and agent-builder views: read-only graph summaries, agents, attestations, policy editor, API keys, billing. |
 
-Supporting infrastructure: Postgres (durable state — the source of truth), Redis (sync buffer, rebuilt from Postgres after restart; rate-limit counters). The edge runs local-memory only — no Redis on the edge — to hold the sub-millisecond lookup budget.
+Supporting infrastructure: Postgres (durable source of truth), Redis (sync buffer, rebuilt from Postgres after restart; rate-limit counters). The edge runs local-memory only.
 
-**Edge deployment topology is configurable.** The Helm chart supports DaemonSet (side-by-side with your app on every node), Deployment + LoadBalancer/Ingress (centralized proxy), or a static binary on a VM with the provided systemd unit. One size is not forced; the chart's `edge.kind` value selects.
+**Edge deployment topology is configurable** via the Helm chart's `edge.kind` value: `DaemonSet`, `Deployment`, or a static binary on a VM with the provided systemd unit.
 
-### 4.3 Data flow
+### 4.3 Request authentication protocol (new in v3)
 
-**Identity model (foundational):** An agent's canonical network identity is its **public-key-backed DID** (`did:key:<...>`). Observed fingerprints (JA4 + canonicalized headers + key hash) are **aliases** correlated to that DID, with an explicit assurance level:
+Registration proves key control once. **Every inbound agent request must prove possession of the private key at request time.** VeriLink uses HTTP Message Signatures (RFC 9421) with Content-Digest (RFC 9530) for body integrity.
 
-- `verified_key` — the agent proved control of the private key (registered with VeriLink).
-- `correlated_behavioral` — a fingerprint was observed and correlated to a registered agent.
-- `unknown` — no registration; the fingerprint has no canonical identity (score 0, policy default).
+**Signature inputs:**
 
-The durable identity anchor is the key hash. JA4 and header layers are corroboration; any UA version bump changes the observed fingerprint but does not reset reputation as long as the key hash is present and matches.
+- `@method` — the HTTP method
+- `@authority` — the host (and port if non-default)
+- `@target-uri` — the full request target
+- `Content-Digest` — for requests with bodies (RFC 9530, SHA-256)
+- `created` — signature creation timestamp
+- a bounded validity window: the edge rejects signatures where `created` is more than 5 minutes in the past or any amount in the future (clock skew tolerance: 30s)
+
+**Signature header:**
+
+```http
+ Signature: sig1=:<base64>:, sig1
+ Signature-Input: sig1=("@method" "@authority" "@target-uri" "content-digest" "created");keyid="<stable-id>#<key-id>";alg="ed25519";created=<unix>
+```
+
+`keyid` is `<stable-verilink-id>#<key-id>` — e.g. `vrl:agent:abc123#k1`. The edge resolves the stable ID, looks up the current (or `iat`-valid) public key for `k1`, and verifies the Ed25519 signature.
+
+**Key hash derivation:** `key_hash = sha256(public_key_jwk)`, computed by the edge **after** successful signature verification. A caller-supplied `key_hash` header is ignored — the edge never trusts a claimed key hash.
+
+**Unsigned behavioral aliases:** requests without a valid signature resolve to the `correlated_behavioral` or `unknown` assurance level. Their trust score is **capped at a provider-configurable maximum** (default 25) — they cannot inherit the full `verified_key` score. Providers can opt to deny unsigned requests entirely via policy.
+
+**Client signing support:** the Go and Node clients gain a signing helper that adds `Signature`, `Signature-Input`, and `Content-Digest` headers to outbound requests. The agent's private key is supplied by the caller and never sent to VeriLink.
+
+### 4.4 Identity model
+
+An agent's canonical network identity is a **stable VeriLink identifier**: `vrl:agent:<uuid>` for agents, `vrl:issuer:<uuid>` for issuers. One or more public keys are attached to each identity, each expressed as a `did:key` verification method and identified by a `key_id` (e.g. `k1`, `k2`). This supports key rotation and history while keeping keys `did:key`-expressed.
+
+JWS `iss` and `sub` carry the **stable VeriLink ID**, not the `did:key`. The signing key's `key_id` is carried in the JWS `kid` header. The verifier resolves the key valid at the token's `iat` from `issuer_keys` history.
+
+**Lazy subject creation:** a subject can be attested to before it registers a key. The control plane creates the subject with `vrl:agent:<uuid>`, no public key, and assurance level `unknown`. A later verified registration attaches a key and upgrades assurance to `verified_key`. This supports the "agents the network hasn't met yet" premise — attest-then-register works, not just register-then-attest.
+
+**Observed fingerprints** (JA4 + canonicalized headers + key hash) are aliases, correlated to the stable ID, with an assurance level:
+
+- `verified_key` — the request carried a valid HTTP Message Signature for a registered key.
+- `correlated_behavioral` — a fingerprint was observed (unsigned or signed but unregistered) and correlated to a registered agent by key hash match.
+- `unknown` — no correlation. The fingerprint is not stored as an alias row; it resolves to score 0 at decision time (see 7.1).
+
+**Alias resolution rule:** a fingerprint that matches exactly one `verified_key` agent resolves to that agent. A fingerprint that matches multiple agents, or matches only `correlated_behavioral` agents, resolves to `unknown` — only `verified_key` assurance can carry trust. This closes the adversarial collision vector (a malicious agent mimicking a trusted agent's header fingerprint gets `unknown`, not the victim's score).
+
+### 4.5 Data flow
 
 **Attestation ingest:**
 
-1. A counterparty observes an agent's behavior.
-2. The counterparty's service calls `control-plane POST /v1/attestations/submit` with a signed JWS token (via the Go or Node client).
-3. The control plane **synchronously** resolves the issuer's current public key from the global `issuers` registry, calls `trust-engine.VerifyAttestation` over gRPC with the token **and the public key** (the engine is stateless; it cannot verify without the key supplied by the caller), and validates schema and `jti`/dedup.
-4. On success, the attestation is stored transactionally in Postgres (global `attestations` table). Invalid attestations receive a **deterministic 4xx** response — they are not asynchronously accepted.
-5. A `RunVeriRank` job is enqueued for the **network** (one global run, debounced — one run per minute, or immediately if no run is in flight). Per-tenant recompute is not needed because scores are global.
+1. A counterparty observes an agent's behavior and signs a JWS attestation (`iss` = issuer's `vrl:issuer:<uuid>`, `sub` = subject's `vrl:agent:<uuid>`, `kid` = signing key id, `vli.schema_version`, `vli.type`, `vli.facts`, `vli.visibility`, `vli.trust_level_delta`).
+2. The counterparty's service calls `control-plane POST /v1/attestations/submit` with the signed JWS.
+3. The control plane **pre-parses the unverified JWS** to read `iss` and `iat` (the JWT header and payload are base64url-decodable without verification). It resolves the issuer's **candidate public keys** from `issuer_keys` valid at `iat` and not revoked. If multiple keys are valid, it tries each (or passes a repeated list to the engine — see 4.6). Unknown `iss`: reject 4xx and audit.
+4. **Synchronous** signature verification via `trust-engine.VerifyAttestation` (caller supplies candidate public keys). **Synchronous** schema validation against the versioned facts schema for `vli.type@vli.schema_version`. **Synchronous** dedup check on `token_digest` (sha256 of the JWS, `UNIQUE NOT NULL`). Invalid attestations receive a **deterministic 4xx**.
+5. On success: the subject is lazily created if it doesn't exist (no key, `unknown` assurance). The attestation is stored transactionally. A `RunVeriRank` job is enqueued for the network (debounced, one run per minute).
 
 **Score computation:**
 
-1. The control plane's `graph` domain loads the global attestation set from Postgres.
-2. It calls `trust-engine.RunVeriRank` over gRPC with the attestation set, the global issuer list, the bootstrap roots, and an **explicit `evaluation_time`** (the engine must be deterministic — it currently calls `time.Now()`, which will be fixed).
-3. The trust engine runs VeriRank (max four hops, distance decay `0.8^d`, time decay `e^(-λt)` with half-life 180 days — matching `TimeDecayHalfLifeDays = 180.0` in `pkg/trust/engine.go:15`) and returns a score table keyed by **canonical network subject (DID)**.
-4. The control plane writes results to the global `network_scores` table (durable) and to Redis (the sync buffer, rebuilt from Postgres after restart), and advances the monotonic `score_version` sequence.
+1. The control plane loads the **active, non-superseded** global attestation set from Postgres, filtered to attestations younger than ~4 half-lives (720 days; older ones contribute ≈0 to VeriRank). This caps the per-run gRPC payload size.
+2. It calls `trust-engine.RunVeriRank` with the attestation set, the global issuer list (with `trust_weight` and `is_bootstrap`), the bootstrap root IDs, and an **explicit `evaluation_time`**. The request is **chunked via client streaming** to stay within gRPC message limits (see 4.6).
+3. The engine runs VeriRank (max 4 hops, distance decay `0.8^d`, time decay `e^(-λt)`, half-life 180 days — matching `TimeDecayHalfLifeDays = 180.0`). Roots initialize at 100 (the current engine behavior; `seed_score` is removed from the contract). Output is keyed by stable VeriLink ID.
+4. The control plane writes results to `network_scores` (durable) and `network_score_history` (only on score change, to bound growth). It appends `score.upsert` / `score.delete` events to the **sync event log** (see 4.7). `sync_version` advances.
 
-**Edge sync (versioned contract):**
+**Edge sync (versioned contract, unified sync_version):**
 
-1. `edge-verifier` boots with a tenant API key over TLS (API key is sufficient for v1; mTLS deferred — see 4.7).
-2. It fetches a **full snapshot**: `GET /v1/sync/snapshot` returns a versioned, compressed REST payload containing the global score table and this tenant's policy. The edge replaces its in-memory snapshot **atomically** (immutable map swap, not an LRU — a known agent must never be silently evicted).
-3. Subsequent updates arrive as **SSE deltas** keyed by a monotonic `Last-Event-ID` (the `score_version`). If the cursor is expired (the control plane has advanced beyond a retained window), the SSE response is `410 Gone` with a directive to fetch a new full snapshot.
-4. The edge persists each snapshot to disk **atomically** (`snapshot.json.tmp` → `rename`) so an ungraceful crash never corrupts the cache.
-5. Postgres is the durable truth; Redis is rebuilt from Postgres after a restart.
+1. `edge-verifier` boots with a tenant API key over TLS.
+2. It fetches a **full snapshot**: `GET /v1/sync/snapshot` returns a versioned, compressed payload containing the global score table, the alias map (fingerprint → stable ID, assurance level), and this tenant's active policy. The edge replaces its in-memory snapshot **atomically** (immutable map swap).
+3. Subsequent updates arrive as **SSE events** from a **unified sync event log** keyed by a monotonic `sync_version`. Event types: `score.upsert`, `score.delete`, `alias.upsert`, `alias.delete`, `key.revoke`, `policy.replace`, `heartbeat`. The edge applies events in order. If its `Last-Event-ID` is expired (the control plane has pruned beyond that version), the SSE response is `410 Gone` → fetch a new full snapshot.
+4. The control plane sends a **heartbeat event every 30 seconds** regardless of score changes. Freshness is measured from the last successfully authenticated heartbeat/contact, not from the last score change (see 7.1).
+5. The edge persists each snapshot to disk **atomically** (`snapshot.json.tmp` → `rename`).
+6. Postgres is the durable truth; Redis is rebuilt from Postgres after a restart.
 
 **Allow/deny decision:**
 
 1. An inbound agent request hits `edge-verifier` on port 8080.
-2. The edge computes the fingerprint in Go (`pkg/fingerprint` — `map[string]string` headers canonicalized via sort + `headers_hash`, plus JA4, protocol, key hash).
-3. It resolves the fingerprint to a canonical DID (via the alias table in the snapshot) and looks up the network score.
-4. **Unknown fingerprint** (not in the snapshot's alias map) → score 0 → policy default action. This is distinct from **degraded mode** (sync outage).
-5. Per the tenant's policy: `allow` (proxy to backend, `X-Verilink-Status: Allowed`) or `deny` (403, `X-Verilink-Status: Denied`). **No `challenge` action in v1.**
-6. The decision is written to a **bounded local WAL** (not the control-plane `audit_log` directly) and flushed in batches to the control plane's `events/` domain asynchronously — never blocking the data path. See Section 7.2.
+2. The edge verifies the HTTP Message Signature (4.3). If invalid or absent → unsigned handling (capped score or deny per policy).
+3. The edge derives `key_hash` from the verified public key, computes the observed fingerprint (`pkg/fingerprint`: `map[string]string` headers → `headers_hash`, plus JA4, protocol, key hash).
+4. It resolves the fingerprint to a stable ID via the alias map (4.4 resolution rule). **Unknown fingerprint** → score 0, `score_reason: unknown`.
+5. It looks up the network score. `blacklisted` and `score_reason` are read from the score row (not inferred from 0 — see 4.6).
+6. Per the tenant's policy: `allow` (proxy, `X-Verilink-Status: Allowed`) or `deny` (403, `X-Verilink-Status: Denied`). No `challenge` in v1.
+7. The decision is written to a **bounded local WAL** and flushed in batches to the control plane's `events/` domain. **When the WAL is full, the edge drops the oldest events and increments a `decisions_dropped_total` counter** — it does **not** block the data path (see 7.2).
 
-### 4.4 Trust-engine gRPC contract
+### 4.6 Trust-engine gRPC contract
 
-Corrected to match the actual `pkg/fingerprint` (headers map, not User-Agent string) and `pkg/trust` (score-only output) implementations.
+Corrected: stable IDs (not `did:key`), client-streaming input, `blacklisted` + `score_reason` output, raw JSON facts (not string-coerced), candidate keys list for verification.
 
 ```proto
 service TrustEngine {
-  rpc RunVeriRank(RunRequest) returns (ScoreTable);
+  rpc RunVeriRank(stream RunChunk) returns (ScoreTable);
   rpc VerifyAttestation(VerifyRequest) returns (VerifyResult);
   rpc Fingerprint(FingerprintRequest) returns (Fingerprint);
 }
 
-// RunVeriRank: deterministic given the same inputs + evaluation_time.
-// The control plane supplies all data; the engine holds no state.
-message RunRequest {
-  repeated Attestation attestations = 1;
-  repeated Issuer issuers = 2;            // includes trust_weight and is_bootstrap
-  repeated string root_dids = 3;         // bootstrap roots of trust
-  int64 evaluation_time_unix = 4;        // REQUIRED — engine must not call time.Now()
+// RunVeriRank: client-streamed input to stay within message limits.
+// First chunk carries the run metadata; subsequent chunks carry attestations/issuers.
+message RunChunk {
+  oneof payload {
+    RunHeader header = 1;
+    Attestation attestation = 2;
+    Issuer issuer = 3;
+  }
+}
+message RunHeader {
+  repeated string root_ids = 1;        // bootstrap root stable IDs
+  int64 evaluation_time_unix = 2;      // REQUIRED — engine must not call time.Now()
 }
 message Attestation {
-  string issuer_did = 1;
-  string subject_did = 2;                // canonical network subject
-  int32 trust_delta = 3;                 // vli.trust_level_delta
+  string issuer_id = 1;                // vrl:issuer:<uuid>
+  string subject_id = 2;               // vrl:agent:<uuid>
+  int32 trust_delta = 3;
   int64 issued_at_unix = 4;
-  int64 expires_at_unix = 5;             // optional; 0 = no expiry
-  string attestation_type = 6;           // transaction_summary | kyb | security_audit | negative_incident | behavioral
-  string jti = 7;                         // advisory; dedup is by token digest in the control plane
+  int64 expires_at_unix = 5;
+  string attestation_type = 6;         // transaction_summary | kyb | security_audit | negative_incident | behavioral
 }
 message Issuer {
-  string did = 1;
-  double trust_weight = 2;               // 0.0..1.0 multiplier (applied in the engine)
+  string issuer_id = 1;
+  double trust_weight = 2;             // applied as a multiplier on contributions
   bool is_bootstrap = 3;
-  int32 seed_score = 4;                  // for bootstrap roots only
 }
 
-// Output: score only. confidence/hop_count/blacklisted are NOT computed by
-// the current engine and are cut from v1. Blacklisting is applied by zeroing
-// the score; the control plane infers blacklist state from score == 0.
+// Output: score + blacklisted + score_reason. confidence/hop_count remain cut.
 message ScoreTable {
   repeated ScoreRow rows = 1;
-  int64 computed_at_unix = 2;             // echoes evaluation_time for traceability
+  int64 computed_at_unix = 2;
 }
 message ScoreRow {
-  string subject_did = 1;               // canonical network subject, NOT a db agent_id
-  int32 score = 2;                      // 0..100
+  string subject_id = 1;               // stable VeriLink ID (agent or issuer)
+  string entity_kind = 2;              // agent | issuer — issuers are scored too (roots start at 100)
+  int32 score = 3;                     // 0..100
+  bool blacklisted = 4;               // true only when a negative_incident from a score≥80 issuer zeroed this subject
+  string score_reason = 5;            // verified | propagated | unknown | blacklisted | expired
 }
 
-// VerifyAttestation: caller supplies the issuer's public key (engine is stateless).
+// VerifyAttestation: caller supplies candidate keys valid at iat.
 message VerifyRequest {
   string jws_token = 1;
-  bytes issuer_public_key = 2;           // Ed25519 public key, resolved by the caller
+  repeated bytes issuer_public_keys = 2;  // Ed25519 public keys valid at iat, not revoked
 }
 message VerifyResult {
   bool valid = 1;
-  string issuer_did = 2;
-  string subject_did = 3;
+  string issuer_id = 2;
+  string subject_id = 3;
   AttestationPayload payload = 4;
-  string error = 5;                      // populated when valid == false
+  string error = 5;
 }
 message AttestationPayload {
   string attestation_type = 1;
-  map<string, string> facts = 2;         // string-coerced; structured facts are JSON in the control plane
+  bytes facts_json = 2;               // raw verified JSON bytes — NOT string-coerced
   int32 trust_level_delta = 3;
   int64 issued_at_unix = 4;
   int64 expires_at_unix = 5;
   string jti = 6;
+  string schema_version = 7;
+  string visibility = 8;              // participants | public
 }
 
 // Fingerprint: matches pkg/fingerprint.Generate exactly.
 message FingerprintRequest {
   string ja4 = 1;
-  map<string, string> headers = 2;       // sorted + canonicalized into headers_hash by the engine
+  map<string, string> headers = 2;
   string key_hash = 3;
   string protocol = 4;
 }
 message Fingerprint { string sha256 = 1; }
 ```
 
-**Engine work required for v1 (not a "thin ~200-line wrapper"):**
+**Engine work required for v1:**
 
-1. **Determinism fix:** replace `time.Now()` calls in `addAttestationLocked` and `calculateTimeDecay` with the supplied `evaluation_time`. New tests required.
-2. **`issuer.trust_weight` application:** the current engine applies `DistanceDecay` and `timeDecay` but no per-issuer weight. Applying `trust_weight` as a multiplier on each contribution is a change to the trust math and requires new property-based tests (monotonicity, decay invariants). This is acknowledged engine work, not a wrapper.
-3. **Score-row identity:** output keyed by `subject_did` (canonical), not `agent_id` (database). The control plane maps DIDs to registered agents for display.
-4. **`confidence`/`hop_count`/`blacklisted` are cut from v1.** The engine returns score only; the dashboard infers blacklist from `score == 0`. If richer metadata is needed post-v1, the engine is extended then.
+1. **Determinism fix:** replace `time.Now()` in `addAttestationLocked` and `calculateTimeDecay` with the supplied `evaluation_time`.
+2. **`trust_weight` application:** apply each issuer's `trust_weight` as a multiplier on its contributions. New property-based tests.
+3. **`blacklisted` + `score_reason` output:** the engine already applies blacklist overrides (zeroing the score when a negative incident comes from an issuer with score ≥ `BlacklistIssuerThreshold = 80`). Expose this as a `blacklisted` boolean and a `score_reason` enum so the control plane doesn't infer from `score == 0` (which also means unknown/unrooted/expired).
+4. **`entity_kind` + issuer scoring:** VeriRank scores every node, including issuers (roots start at 100). The output includes issuer scores so the dashboard and moderation queue can show why a blacklist fired. `network_scores` is keyed by `subject_id` with an `entity_kind` column (no FK to `agents`).
+5. **`seed_score` removed:** the engine initializes all roots at 100. The contract does not carry `seed_score`; bootstrap roots get `is_bootstrap = true` and the standard 100 initialization. (Stepwise de-emphasis reduces `trust_weight`, not the initial score — see 6.1.)
+6. **Max-path vs. weighted-average:** the engine currently takes the maximum trust path (`engine.go:160`). The `trust_graph.md` spec says weighted average. **v1 locks the tested max-path algorithm** and documents this divergence; consensus redesign is deferred. The spec doc is updated to match.
 
-### 4.5 Reused vs. adapted (delta from Whimsy)
+### 4.7 Sync event log (new in v3)
 
-"Direct port" was an overstatement. The Whimsy modules are a strong starting point but require substantial adaptation for VeriLink's global-graph, OIDC, multi-tenant, and billing model.
+A single durable, monotonic event log drives edge sync. One `sync_version` covers scores, aliases, keys, and policies — not just score changes.
+
+```sql
+sync_events (
+  sync_version    bigserial pk,
+  event_type      text not null,        -- score.upsert | score.delete | alias.upsert | alias.delete | key.revoke | policy.replace | heartbeat
+  subject_id      text,                 -- for score/alias events
+  tenant_id       uuid,                 -- for policy.replace
+  payload         jsonb not null,       -- event-specific
+  created_at      timestamptz not null default now()
+);
+```
+
+The snapshot endpoint reads the current state as of the latest `sync_version`. The SSE stream replays events from the edge's `Last-Event-ID` forward. The control plane prunes events older than a retention window (default 24h); a request for a pruned version returns `410 Gone`.
+
+### 4.8 Reused vs. adapted (delta from Whimsy)
 
 | Whimsy module | VeriLink use | Adaptation |
 |---|---|---|
 | `api/src/db/{client,migrate,transaction}.js` | Adapt | New schema; same Pool/migrate patterns |
-| `api/src/middleware/auth.js` | **Substantial adaptation** | Drop Firebase Admin, add OIDC subject validation, add `vrl_` key format, add membership resolution, add tenant-billing gating. HMAC-SHA256 key hashing is the part that ports cleanly. |
-| `api/src/middleware/{rateLimit,audit}.js` | Adapt | Per-tenant quotas by plan; audit schema differs |
-| `api/src/authz/` (RBAC) | Adapt | Define VeriLink resources (`agent`, `issuer`, `attestation`, `policy`, `tenant`, `billing`); global-vs-tenant resource distinction |
-| `api/src/shared/{logger,redis,apiKeyRequestActivity,encryption,openapi}.js` | Adapt | New key patterns for global graph + sync cursors; new audit actions |
-| `app/` Vite + Radix + TanStack + shadcn kit | Fork as scaffold | Strip Whimsy features; add VeriLink views; read-only graph summaries (no `@xyflow/react` explorer in v1) |
-| `api/src/domains/billing/*` (Stripe patterns) | Adapt | Reuse checkout/portal/webhook constructs; new subscription tiers; persist processed webhook IDs for dedup |
+| `api/src/middleware/auth.js` | **Substantial adaptation** | Drop Firebase, add OIDC (Clerk OAuth + PKCE), `vrl_` key format, membership resolution, tenant-billing gating. HMAC-SHA256 key hashing ports cleanly. |
+| `api/src/middleware/{rateLimit,audit}.js` | Adapt | Per-tenant quotas; audit schema differs |
+| `api/src/authz/` | Adapt | VeriLink resources; global-vs-tenant resource distinction |
+| `api/src/shared/{logger,redis,apiKeyRequestActivity,encryption,openapi}.js` | Adapt | New key patterns; new audit actions |
+| `app/` kit | Fork as scaffold | VeriLink views; read-only graph summaries |
+| `api/src/domains/billing/*` | Adapt | Reuse checkout/portal/webhook; persist webhook IDs |
 
-### 4.6 What stays Go
+### 4.9 Whimsy and Codero as reference customers
 
-The trust-core algorithms stay in Go as `pkg/*` because they are correct and tested. Reimplementing VeriRank, the JWS attestation codec, and the fingerprint logic in TypeScript would risk divergence. A Go gRPC server (`cmd/trust-engine`) exposes the existing packages to the TypeScript control plane. The engine requires the determinism and `trust_weight` fixes in 4.4 before it can serve the control plane.
+**Whimsy** is the first seeded issuer. Its `shared/verilink.js` module already submits `behavioral` attestations. Post-productization it points at the hosted control plane. Two compatibility fixes (Section 6.3): add `behavioral` to the enum, and dedup on `token_digest` (not `jti`). Whimsy's `remoteFingerprint` (a hash of `userId:remoteId:provider`) means Whimsy attests about storage remotes, not autonomous agents — it proves the issuer loop, not the provider-side agent-identification loop.
 
-The edge stays Go for v1. The existing `cmd/edge-verifier` already meets the `VR-002` budget (10k req/s, <1ms overhead, per the ROADMAP completion notes). Hardening work for v1: TLS termination, the versioned sync client, the atomic in-memory snapshot, the bounded local WAL for decision telemetry. The Rust rewrite is deferred to post-v1 behind the FFI parity harness (`scripts/parity-check.sh` runs a matrix of raw HTTP/TLS request fixtures against Go and Rust to guarantee byte-identical SHA-256 fingerprints across all TLS client hellos).
-
-### 4.7 mTLS scope (v1)
-
-Issuing and rotating edge client certificates means running a CA, which is out of scope for v1. v1 uses **tenant API keys over TLS** for edge-to-control-plane auth. mTLS is deferred to post-v1 alongside the Rust edge; if it returns, the spec will name the PKI mechanism at that time.
-
-### 4.8 Whimsy as first reference customer
-
-Whimsy's existing `api/src/shared/verilink.js` module already integrates with the VeriLink attestation API. Post-productization, this module points at the hosted control plane, and Whimsy becomes the first seeded issuer. Two compatibility points require migration (see Section 6.3): the `behavioral` attestation type and the absent `jti`.
+**Codero** is the second reference customer, proving the provider loop. A dedicated VeriLink-guarded listener is placed in front of a narrow agent-ingest endpoint (`POST /memory/observations`). An OpenCode/Codex session signs requests using the new HTTP-signature protocol. VeriLink is **not** placed in front of the entire Codero dashboard API — only the agent-write surface. This exercises the full provider loop (signature verification → key hash → identity resolution → score → allow/deny) with zero external dependency and gives a credible "VeriLink protects itself" launch story alongside the Codero example.
 
 ---
 
 ## 5. Data model
 
-Postgres. The graph is **global**; tenants own policies, API keys, memberships, edge nodes, and billing. Isolation is **application-level** (the ported `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables) — not PostgreSQL Row-Level Security in v1. Tenant-scoped tables carry `tenant_id` and use **composite tenant-safe foreign keys** to prevent cross-tenant references. Global tables have no `tenant_id`.
+Postgres. The schema is presented as a **logical schema** — the executable DDL is generated by the Whimsy-style migration runner. The graph is **global**; tenants own policies, API keys, memberships, edge nodes, and billing. Isolation is **application-level** in v1 (the ported `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables). Tenant-scoped cross-references use **composite tenant-safe foreign keys**.
 
 ### 5.1 Global graph tables
 
 ```sql
 -- Canonical agent identities (network-wide)
 agents (
-  did             text pk,                  -- did:key:<...>, the public-key-backed canonical ID
+  id              text pk,                  -- vrl:agent:<uuid>
   name            text,
-  owner_tenant_id uuid references tenants(id),  -- the tenant that registered this agent (may be null for bootstrap seeds)
-  public_key_jwk  jsonb not null,
+  owner_tenant_id uuid references tenants(id),
+  assurance_level text not null default 'unknown',  -- unknown | correlated_behavioral | verified_key
   metadata        jsonb default '{}',
   first_seen_at   timestamptz not null default now(),
   last_seen_at    timestamptz not null default now(),
-  status          text not null default 'active'  -- active | revoked
+  status          text not null default 'active',   -- active | deactivated
+  deactivated_at  timestamptz
+);
+-- agents has no public_key_jwk column. Keys live in agent_keys (below), supporting rotation.
+-- assurance_level is upgraded to verified_key when a key is attached and proven.
+
+-- Agent keys (rotation/history)
+agent_keys (
+  id              text not null,            -- key id, e.g. k1
+  agent_id        text not null references agents(id),
+  public_key_jwk  jsonb not null,           -- expressed as a did:key verification method
+  valid_from      timestamptz not null default now(),
+  valid_until     timestamptz,              -- null = current
+  revoked_at      timestamptz,
+  revocation_reason text,
+  primary key (agent_id, id)
 );
 
 -- Observed fingerprints correlated to canonical agents (aliases)
+-- Only correlated fingerprints are stored. Unknown fingerprints are NOT alias rows.
 agent_fingerprints (
-  fingerprint     text not null,            -- sha256 hex from pkg/fingerprint.Generate
-  agent_did       text not null references agents(did),
-  assurance_level text not null,            -- verified_key | correlated_behavioral | unknown
+  fingerprint     text primary key,         -- one fingerprint → at most one agent (see resolution rule 4.4)
+  agent_id        text not null references agents(id),
+  assurance_level text not null,            -- verified_key | correlated_behavioral (never 'unknown')
   first_seen_at   timestamptz not null default now(),
-  last_seen_at    timestamptz not null default now(),
-  primary key (fingerprint, agent_did)
+  last_seen_at    timestamptz not null default now()
 );
+-- If a fingerprint would match multiple agents, it is not stored; it resolves to unknown at decision time.
 
 -- Issuers: entities that sign attestations (global)
 issuers (
-  did             text pk,                  -- did:key:<...>
+  id              text pk,                  -- vrl:issuer:<uuid>
   name            text not null,
-  public_key_jwk  jsonb not null,           -- current key
-  trust_weight    numeric(3,2) default 1.0, -- 0.00..1.00 (applied inside VeriRank)
-  is_bootstrap   boolean default false,
+  owner_tenant_id uuid references tenants(id),  -- the tenant that owns this issuer (for dashboard access, private-facts authz)
+  trust_weight    numeric(3,2) default 1.0,
+  is_bootstrap    boolean default false,    -- derived from bootstrap_registry by the seeder
   verified_at     timestamptz,
   created_at      timestamptz not null default now()
 );
 
--- Issuer key history + revocation
+-- Issuer keys (rotation/history)
 issuer_keys (
-  id              uuid pk,
-  issuer_did      text not null references issuers(did),
-  public_key_jwk  jsonb not null,
-  valid_from      timestamptz not null,
-  valid_until     timestamptz,              -- null = current; set on rotation/revocation
+  id              text not null,            -- key id, e.g. k1
+  issuer_id       text not null references issuers(id),
+  public_key_jwk  jsonb not null,           -- expressed as a did:key verification method
+  valid_from      timestamptz not null default now(),
+  valid_until     timestamptz,              -- null = current
   revoked_at      timestamptz,
-  revocation_reason text
+  revocation_reason text,
+  primary key (issuer_id, id)
 );
 
 -- Attestations: signed behavioral reports (global)
 attestations (
   id              uuid pk,
-  issuer_did      text not null references issuers(did),
-  subject_did     text not null references agents(did),
+  issuer_id       text not null references issuers(id),
+  subject_id      text not null references agents(id),
   jws_token       text not null,
-  token_digest    text not null,            -- sha256(jws_token); UNIQUE, used for dedup (not nullable jti)
+  token_digest    text not null unique,     -- sha256(jws_token); dedup (NOT NULL UNIQUE)
   payload         jsonb not null,
-  facts           jsonb not null,
+  facts           jsonb not null,           -- shareable facts
+  facts_private   jsonb,                    -- issuer/subject/staff only (see visibility)
+  visibility      text not null default 'participants',  -- participants | public
   trust_delta     integer not null,
   attestation_type text not null,           -- transaction_summary | kyb | security_audit | negative_incident | behavioral
+  schema_version  text not null,            -- e.g. "1"; versioned facts schema
   jti             text,                     -- advisory; may be null
   issued_at       timestamptz not null,
   expires_at      timestamptz,
-  superseded_by   uuid references attestations(id),  -- retraction/supersession chain
+  superseded_by   uuid references attestations(id),
   sig_verified    boolean not null default true,
-  received_at     timestamptz not null default now(),
-  unique (token_digest)                     -- dedup on token hash; jti is advisory
+  received_at     timestamptz not null default now()
 );
 
 -- Network scores: materialized VeriRank output (global, canonical)
+-- Keyed by subject_id (stable VeriLink ID), with entity_kind so issuers are scored too.
 network_scores (
-  subject_did     text not null references agents(did),
+  subject_id      text primary key,         -- vrl:agent:<uuid> or vrl:issuer:<uuid>
+  entity_kind     text not null,            -- agent | issuer
   score           integer not null,         -- 0..100
+  blacklisted     boolean not null default false,
+  score_reason    text not null,            -- verified | propagated | unknown | blacklisted | expired
   computed_at     timestamptz not null default now(),
-  score_version   bigint not null,          -- monotonic; the sync cursor
-  primary key (subject_did)
+  sync_version    bigint not null           -- the sync event log version this score was written at
 );
+-- No FK to agents(id) — issuers are scored too.
 
--- Score history (for dashboard time-series)
+-- Score history: one row per subject per score CHANGE (not per run)
 network_score_history (
-  subject_did     text not null references agents(did),
+  subject_id      text not null,
   score           integer not null,
+  blacklisted     boolean not null,
+  score_reason    text not null,
   computed_at     timestamptz not null,
-  score_version   bigint not null,
-  primary key (subject_did, score_version)
+  sync_version    bigint not null,
+  primary key (subject_id, sync_version)
 );
 
--- Bootstrap registry: VeriLink-seeded root of trust (source of truth)
-bootstrap_registry (
-  did             text pk references issuers(did) or agents(did),  -- must exist in the global tables
+-- Sync event log (unified, monotonic) — see 4.7
+sync_events (
+  sync_version    bigserial pk,
+  event_type      text not null,
+  subject_id      text,
+  tenant_id       uuid,
+  payload         jsonb not null,
+  created_at      timestamptz not null default now()
+);
+
+-- Bootstrap registry: VeriLink-seeded root of trust
+-- Split into typed tables to avoid the invalid "REFERENCES issuers OR agents" SQL.
+bootstrap_agents (
+  agent_id        text primary key references agents(id),
   name            text not null,
-  kind            text not null,           -- agent | issuer
-  seed_score      integer not null,
   seeded_at       timestamptz not null default now(),
-  de_emphasized_at timestamptz              -- set when organic volume replaces this seed
+  current_weight  numeric(3,2) not null default 1.0,  -- stepwise-reduced during de-emphasis
+  de_emphasized_at timestamptz,
+  de_emphasis_reason text,
+  approved_by     uuid references users(id)            -- staff who approved the step
 );
+bootstrap_issuers (
+  issuer_id       text primary key references issuers(id),
+  name            text not null,
+  seeded_at       timestamptz not null default now(),
+  current_weight  numeric(3,2) not null default 1.0,
+  de_emphasized_at timestamptz,
+  de_emphasis_reason text,
+  approved_by     uuid references users(id)
+);
+-- is_bootstrap on issuers/agents is derived by the seeder from these tables. No hand-maintained column.
 ```
-
-`bootstrap_registry` is the source of truth; the seeder (`domains/bootstrap`) materializes its entries into `issuers`/`agents` with `is_bootstrap = true`. There is no separate `issuers.is_bootstrap` column maintained by hand — it is derived from the registry.
 
 ### 5.2 Tenant-scoped tables
 
@@ -417,7 +515,7 @@ tenants (
   id           uuid pk,
   slug         text unique not null,
   name         text not null,
-  plan         text not null default 'free',  -- free | pro | enterprise
+  plan         text not null default 'free',
   status       text not null default 'active',
   created_at   timestamptz not null default now()
 );
@@ -426,13 +524,13 @@ tenants (
 users (
   id           uuid pk,
   email        citext unique not null,
-  oidc_issuer  text not null,            -- Clerk issuer URL (or self-hosted OIDC issuer)
-  oidc_subject text not null,            -- OIDC sub claim
+  oidc_issuer  text not null,            -- Clerk issuer URL
+  oidc_subject text not null,            -- OIDC sub
   created_at   timestamptz not null default now(),
   unique (oidc_issuer, oidc_subject)
 );
 
--- Tenant memberships (junction; a user can be in multiple tenants with different roles)
+-- Tenant memberships (junction)
 tenant_memberships (
   user_id      uuid not null references users(id),
   tenant_id    uuid not null references tenants(id),
@@ -441,54 +539,58 @@ tenant_memberships (
   primary key (user_id, tenant_id)
 );
 
--- API keys — adapts Whimsy middleware/auth.js (HMAC-SHA256)
+-- API keys — HMAC-SHA256
 api_keys (
   id              uuid pk,
   tenant_id       uuid not null references tenants(id),
-  key_prefix      text not null,           -- first 12 chars, shown in UI
+  key_prefix      text not null,
   key_hash_hmac   text not null,           -- HMAC-SHA256 keyed by API_KEY_HMAC_SECRET
-  scopes          text[] not null,         -- attest:write | attest:read | sync:read | policy:admin | tenant:admin | billing:read
+  scopes          text[] not null,
   last_used_at    timestamptz,
   created_at      timestamptz not null default now(),
   revoked_at      timestamptz
 );
--- No key_hash_legacy column: this is a new product; no legacy vrl_ keys to migrate.
+-- Format: vrl_ + exactly 64 lowercase hex chars. Regex: /^vrl_[0-9a-f]{64}$/.
 
--- Policies: per-tenant threshold + action (overlay on global scores)
+-- Policies: per-tenant threshold + below-threshold action (overlay on global scores)
 policies (
   id              uuid pk,
   tenant_id       uuid not null references tenants(id),
   name            text not null,
-  threshold       integer not null default 50,  -- 0..100; score < threshold = policy action
-  action          text not null default 'deny', -- allow | deny (no challenge in v1)
-  fingerprint_rules jsonb default '{}',
+  threshold       integer not null default 50,
+  below_threshold_action text not null default 'deny',  -- allow | deny (renamed from "action")
+  allow_fingerprints text[] default '{}',   -- exact-match allow list (precedence over threshold)
+  deny_fingerprints text[] default '{}',    -- exact-match deny list (precedence over threshold and over score)
+  unsigned_max_score integer default 25,    -- cap for unsigned/correlated_behavioral requests; set 0 to deny all unsigned
   is_active       boolean not null default true,
   created_at      timestamptz not null default now(),
-  unique (tenant_id, name),
-  -- only one active policy per tenant
-  partial unique index active_policy_per_tenant on (tenant_id) where is_active
+  unique (tenant_id, name)
+  -- only one active policy per tenant:
+  -- partial unique index active_policy_per_tenant on (tenant_id) where is_active
 );
 
--- Edge nodes (per tenant)
+-- Edge nodes (per tenant). PK is id; composite unique (tenant_id, id) for tenant-safe FKs.
 edge_nodes (
-  id              uuid pk,
+  id              uuid pk,                 -- also serves as the WAL source-id
   tenant_id       uuid not null references tenants(id),
   name            text not null,
   api_key_id      uuid references api_keys(id),
   last_seen_at    timestamptz,
-  last_sync_version bigint,                -- the score_version of its last successful sync
-  status          text not null default 'unknown',  -- healthy | stale | unknown
-  created_at      timestamptz not null default now()
+  last_sync_version bigint,
+  status          text not null default 'unknown',
+  created_at      timestamptz not null default now(),
+  unique (tenant_id, id)                   -- composite for tenant-safe FK target
 );
 
--- Sync cursors (per tenant + edge node)
+-- Sync cursors (per tenant + edge node). Composite FK to edge_nodes(tenant_id, id).
 sync_cursors (
-  tenant_id       uuid not null references tenants(id),
-  edge_node_id    uuid not null references edge_nodes(id),
-  last_cursor     bigint not null default 0,   -- the score_version
+  tenant_id       uuid not null,
+  edge_node_id    uuid not null,
+  last_cursor     bigint not null default 0,   -- sync_version
   last_sync_at    timestamptz,
   snapshot_hash   text,
-  primary key (tenant_id, edge_node_id)
+  primary key (tenant_id, edge_node_id),
+  foreign key (tenant_id, edge_node_id) references edge_nodes(tenant_id, id)
 );
 
 -- Subscriptions (Stripe)
@@ -498,12 +600,12 @@ subscriptions (
   stripe_customer_id   text not null,
   stripe_subscription_id text not null,
   plan            text not null,
-  status          text not null,           -- active | past_due | canceled | ...
+  status          text not null,
   current_period_end timestamptz,
   created_at      timestamptz not null default now()
 );
 
--- Stripe webhook event dedup
+-- Stripe webhook event dedup (global table, moved under global heading in executable DDL)
 stripe_webhook_events (
   id              text pk,                 -- Stripe event id
   received_at     timestamptz not null default now(),
@@ -511,26 +613,43 @@ stripe_webhook_events (
   payload         jsonb not null
 );
 
--- Decision events: high-volume, from the edge (separate from audit_log)
-decision_events (
+-- Decision events: aggregate + sampled raw (NOT every decision at line rate)
+-- Per-minute aggregates
+decision_aggregates (
   id              bigserial pk,
   tenant_id       uuid not null references tenants(id),
-  edge_node_id    uuid references edge_nodes(id),
-  fingerprint     text not null,
-  resolved_did    text,                    -- may be null for unknown fingerprints
-  score           integer,
+  edge_node_id    uuid not null,
+  bucket_minute   timestamptz not null,
+  fingerprint     text,                    -- nullable for "all" rollup
+  resolved_id     text,                    -- nullable for unknown
   action          text not null,           -- allow | deny
+  count           integer not null,
+  primary key (tenant_id, edge_node_id, bucket_minute, action)
+);
+-- Sampled raw events (all denies + tunable % of allows)
+decision_samples (
+  id              bigserial pk,
+  tenant_id       uuid not null references tenants(id),
+  edge_node_id    uuid not null,
+  wal_seq         bigint not null,         -- per-edge monotonic WAL sequence (dedup key)
+  fingerprint     text not null,
+  resolved_id     text,
+  score           integer,
+  blacklisted     boolean,
+  score_reason    text,
+  action          text not null,
   decided_at      timestamptz not null,
-  received_at     timestamptz not null default now()
+  received_at     timestamptz not null default now(),
+  unique (edge_node_id, wal_seq)           -- dedup
 );
 
 -- Audit log: administrative/state-change events only (low volume)
 audit_log (
   id              bigserial pk,
   tenant_id       uuid not null references tenants(id),
-  actor_type      text not null,           -- user | api_key | edge_node | system
+  actor_type      text not null,
   actor_id        text,
-  action          text not null,           -- attestation.submit | policy.update | api_key.revoke ...
+  action          text not null,
   resource        text not null,
   resource_id     text,
   metadata        jsonb default '{}',
@@ -542,20 +661,22 @@ audit_log (
 
 ### 5.3 Tenant isolation
 
-**Application-level isolation**, not PostgreSQL RLS, in v1. The ported `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables. Global graph tables (`agents`, `issuers`, `attestations`, `network_scores`) are intentionally readable across tenants — that is the network. Tenant-scoped tables use **composite tenant-safe foreign keys**: where a tenant-scoped table references another tenant-scoped table, the FK includes `tenant_id` on both sides to prevent a row in tenant A referencing a row in tenant B. (No such cross-references exist in the v1 schema — `edge_nodes` and `sync_cursors` reference only `tenants` and `api_keys`, both via the tenant's own `tenant_id`.)
+**Application-level** in v1. The ported `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables. Global graph tables are cross-tenant by design. Tenant-scoped cross-references use composite FKs: `sync_cursors.(tenant_id, edge_node_id) → edge_nodes.(tenant_id, id)`. `decision_samples` and `decision_aggregates` carry `tenant_id` and `edge_node_id` and are filtered by `tenant_id` at the authz layer.
 
 ### 5.4 Multi-tenancy model
 
-Row-level isolation with a shared schema. The OSS self-hosted deployment runs the same code with a single tenant. Enterprise tenants who need physical isolation run their own self-hosted deployment (same code, same Helm chart). One code path.
+Row-level isolation, shared schema. Self-hosted = single tenant. Enterprise = own self-hosted deployment. One code path.
 
 ### 5.5 Data retention and privacy
 
-Attestation `facts` are free-form JSON from counterparties and may carry personal data. v1 policy:
+Attestation `facts` and `facts_private` may carry personal data. v1 policy:
 
-- Attestations are retained for the life of the issuing issuer's relationship + 1 year, then archived.
-- A subject agent owner may request deletion of their agent's record; attestations about that agent are anonymized (subject_did replaced with a tombstone) rather than deleted, to preserve graph integrity.
-- Decision events are retained 90 days (pro) / 1 year (enterprise); audit log entries 90 days (pro) / 1 year (enterprise).
-- A `/v1/privacy/export` and `/v1/privacy/delete` endpoint is in scope for v1 to support GDPR/CCPA subject-access requests.
+- **Retention:** attestations are retained until the later of (a) the attestation's `expires_at` and (b) the issuing issuer's deactivation date + 1 year. After that, attestations are deleted (not tombstoned).
+- **Subject deletion request:** the subject agent is **deactivated** (`status = 'deactivated'`, `deactivated_at = now()`). It is removed from active scoring (excluded from VeriRank runs). Ownership and display metadata (`name`, `metadata`) are cleared. The cryptographic record (the agent row and its attestations) is preserved or deleted **according to an explicit legal basis and retention policy** — not merely relabeled. Combining multiple subjects into a tombstone is explicitly avoided (it would damage graph integrity).
+- **`/v1/privacy/export` and `/v1/privacy/delete`** endpoints are in scope for v1 as **workflow initiators**, not as automatic compliance guarantees. **Privacy counsel must validate the retention and erasure model** before the hosted product processes personal data. The endpoints are a tool, not a compliance certification.
+- **`facts`/`facts_private` never written to logs.** Redaction applies at every egress: API responses, dashboard, exports. `facts_private` is visible only to the issuer's owner tenant, the subject's owner tenant, and VeriLink staff.
+- **`visibility: participants | public`** is attestation-level (no field-level mixed visibility in v1). If an issuer needs some facts public and some private, it issues two attestations.
+- Decision aggregates: retained 90 days (pro) / 1 year (enterprise). Decision samples: retained 30 days (pro) / 90 days (enterprise). Audit log: 90 days (pro) / 1 year (enterprise).
 
 ---
 
@@ -563,49 +684,56 @@ Attestation `facts` are free-form JSON from counterparties and may carry persona
 
 | Concern | Measure |
 |---|---|
-| **Signature verification** | Ed25519 (EdDSA). The trust engine verifies every JWS against the issuer's current public key, which the **caller supplies** in `VerifyRequest` (the engine is stateless). Unknown issuer: reject and audit. Issuer key rotation is supported via `issuer_keys` history; revoked keys fail verification. |
-| **API key storage** | HMAC-SHA256 keyed by `API_KEY_HMAC_SECRET` (≥16 chars). Raw keys never persisted. No `key_hash_legacy` column — new product, no legacy keys. |
-| **API key format** | `vrl_<64hex>`. Regex `/^vrl_[A-Za-z0-9_-]{32,128}$/`. Extraction via `Authorization: Bearer` or `X-API-Key` (Whimsy's tightened parser logic, adapted). |
-| **Tenant isolation** | Application-level: the ported `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables. Global graph tables are cross-tenant by design. |
-| **RBAC scopes** | `attest:write`, `attest:read`, `sync:read`, `policy:admin`, `tenant:admin`, `billing:read`. API keys carry scopes; dashboard users carry roles mapped to scopes via `authz/decision.js`. |
-| **Rate limiting** | Per-tenant quotas by plan: free (100 attestations/day, 1 sync/min), pro (10k/day, 10 sync/min), enterprise (custom). Edge sync (snapshot + SSE) is exempt from request rate limits. |
-| **Edge to control-plane auth** | Tenant API key over TLS in v1. mTLS deferred (see 4.7). |
-| **Customer issuer private keys** | **Never enter VeriLink.** VeriLink stores issuer **public keys** only. The only private key VeriLink holds is its own bootstrap signing key, in KMS/HSM. |
-| **Audit** | `audit_log` is for **state-changing administrative events only** (attestation submit accepted, policy update, API key create/revoke, tenant billing change). High-volume edge decisions go to `decision_events`, batched through a bounded local WAL — see 7.2. |
-| **Bootstrap registry protection** | Only `tenant:admin` on the VeriLink staff tenant can edit `bootstrap_registry`. Bootstrap issuers carry `is_bootstrap = true` (derived from the registry) and are visually distinct in the dashboard. |
-| **Replay protection** | Attestations carry `iat`/`exp`. The engine rejects expired or future-dated tokens. Dedup is on `token_digest` (sha256 of the JWS, `UNIQUE NOT NULL`) — not nullable `jti`, which would permit unlimited duplicates. `jti` is advisory. |
-| **Fail-closed edge** | Unknown fingerprint → score 0 → policy default (deny). Degraded mode (sync outage) falls back to the last good snapshot with a max acceptable age (see 7.1); beyond that age the edge fails closed (503). |
+| **Request authentication** | HTTP Message Signatures (RFC 9421) + Content-Digest (RFC 9530). `key_hash` derived after verification; caller-supplied key hashes are ignored. Unsigned requests are capped or denied per policy. |
+| **Signature verification (attestations)** | Ed25519. The control plane pre-parses the JWS for `iss`/`iat`, resolves candidate keys from `issuer_keys` valid at `iat` and not revoked, and supplies them to `trust-engine.VerifyAttestation`. Key rotation does not break historical attestation verification. |
+| **API key storage** | HMAC-SHA256 keyed by `API_KEY_HMAC_SECRET` (≥16 chars). Raw keys never persisted. No legacy column. |
+| **API key format** | `vrl_` + exactly 64 lowercase hex chars. Regex `/^vrl_[0-9a-f]{64}$/`. Extraction via `Authorization: Bearer` or `X-API-Key`. |
+| **Tenant isolation** | Application-level: `authz/` layer injects `WHERE tenant_id = $1` on tenant-scoped tables. Global graph tables are cross-tenant by design. |
+| **RBAC scopes** | `attest:write`, `attest:read`, `sync:read`, `policy:admin`, `tenant:admin`, `billing:read`. |
+| **Rate limiting** | Per-tenant quotas by plan. Edge sync (snapshot + SSE) exempt from request rate limits. |
+| **Edge to control-plane auth** | Tenant API key over TLS in v1. mTLS deferred. |
+| **Customer private keys** | **Never enter VeriLink.** Only public keys are stored. The only private key VeriLink holds is its own bootstrap signing key, in KMS/HSM. |
+| **Audit** | `audit_log` for state-changing administrative events. Edge decisions → `decision_aggregates` + `decision_samples` (aggregate + sampled, not line-rate). |
+| **Replay protection** | Attestations carry `iat`/`exp`. Dedup on `token_digest` (sha256 of JWS, NOT NULL UNIQUE). `jti` advisory. |
+| **Fail-closed edge** | Unknown fingerprint → score 0, policy default. Degraded (sync stale beyond `MAX_SNAPSHOT_AGE`) → 503. |
 
 ### 6.1 Abuse and Sybil resistance
 
-The structural defense is VeriRank itself: trust propagates **only from roots of trust**. An attacker who mints sock-puppet issuers and has them attest to their own agent gets **zero score**, because the puppet cluster is unrooted — no path from a bootstrap root reaches it. This is already true in `pkg/trust/engine.go` (only nodes reachable from `rootsOfTrust` accumulate score).
+VeriRank propagates trust **only from roots of trust**. An attacker minting sock-puppet issuers gets **zero score** — the puppet cluster is unrooted. This is already true in `pkg/trust/engine.go`.
 
-Additional controls:
-
-- **Issuer verification process:** `issuers.verified_at` is set only after proof of key control (the issuer signs a challenge) and, for higher trust weights, manual review by VeriLink staff. Unverified issuers default to `trust_weight = 0` (their attestations are stored but contribute no score) until verified.
-- **Agent ownership proof:** registering an agent requires signing a challenge with the agent's private key, proving the registrant controls it.
-- **Attestation taxonomy and schema validation:** the control plane validates `attestation_type` against the allowed enum and validates `facts` against a per-type JSON schema before storing. Unknown types are rejected with 4xx.
-- **Negative-report dispute/moderation:** a negative attestation (`negative_incident`) from a highly trusted issuer (score ≥ 80, the `BlacklistIssuerThreshold` in `pkg/trust/engine.go:17`) zeroes the subject's score. The subject may file a dispute (a moderation queue in the control plane); disputes do not auto-revoke the blacklist but flag it for staff review.
-- **Issuer/key revocation:** `issuer_keys.revoked_at` + `revocation_reason` records revocation; revoked keys fail verification. An issuer can be entirely deactivated by revoking all its keys.
-- **Attestation retraction/supersession:** `attestations.superseded_by` chains retractions. A retraction does not rewrite history; a new attestation with `superseded_by` pointing at the old one replaces it in the next VeriRank run.
-- **Visibility of sensitive facts:** `facts` may be marked `_private` by the issuer (a key prefix convention); the control plane redacts `_private` keys in API responses to non-issuer, non-subject tenants. Aggregate reputation (score) is always visible to all tenants; raw facts are visible only to the issuer, the subject's owner, and VeriLink staff.
+- **Issuer verification:** `issuers.verified_at` is set after proof of key control (sign a challenge) and, for higher `trust_weight`, manual review. Unverified issuers default to `trust_weight = 0`.
+- **Agent ownership proof:** registration requires signing a challenge with the agent's private key.
+- **Attestation taxonomy + schema validation:** the control plane validates `attestation_type` against the enum and `facts` against the versioned per-type JSON Schema (Section 6.4) before storing. Unknown types or schema versions → 4xx.
+- **Negative-report dispute/moderation:** a `negative_incident` from an issuer with score ≥ 80 (`BlacklistIssuerThreshold`) zeroes the subject's score (`blacklisted = true`). The subject may file a dispute (moderation queue); disputes flag for staff review, no auto-revoke.
+- **Issuer/key revocation:** `issuer_keys.revoked_at` + `revocation_reason`; revoked keys fail verification. An issuer is deactivated by revoking all keys. A `key.revoke` sync event propagates to all edges.
+- **Attestation retraction/supersession:** `attestations.superseded_by` chains retractions; a superseding attestation replaces the old in the next VeriRank run.
+- **Visibility:** `facts_private` visible only to issuer-owner, subject-owner, and staff. `visibility: participants | public` is attestation-level.
 
 ### 6.2 JA4 and TLS termination
 
-JA4 requires visibility into the TLS ClientHello. Deployment shapes and degraded-fingerprint behavior:
-
-- **Edge terminates TLS:** full JA4 available. The recommended deployment for maximum fingerprint strength.
-- **Edge behind an existing LB or Cloudflare:** JA4 is unavailable. The fingerprint collapses to `headers_hash + key_hash + protocol` (no `ja4` field). The edge sets `X-Verilink-Fingerprint-Mode: full` or `degraded` so the backend and the dashboard know the assurance level.
-- **Identity continuity:** the durable anchor is `key_hash`. A UA version bump changes `headers_hash` and produces a new observed fingerprint, but as long as `key_hash` matches a registered agent, the new fingerprint is correlated as a `correlated_behavioral` alias of the same canonical DID — reputation is not reset. Agents without a key hash have no durable identity; any transport change resets their reputation.
+- **Edge terminates TLS:** full JA4 available.
+- **Edge behind an existing LB or Cloudflare:** JA4 unavailable. Fingerprint collapses to `headers_hash + key_hash + protocol`. Edge sets `X-Verilink-Fingerprint-Mode: full | degraded`.
+- **Identity continuity:** `key_hash` is the durable anchor, derived from the verified signature. A UA version bump changes `headers_hash` but reputation is not reset as long as the key hash matches a registered agent.
 
 ### 6.3 Whimsy compatibility (migration required)
 
-Two concrete incompatibilities between Whimsy's current `shared/verilink.js` and the v1 schema:
+1. **`type: "behavioral"`** added to the enum.
+2. **No `jti`** in Whimsy's current payload → dedup on `token_digest`. Whimsy's tokens dedup correctly without modification.
+3. **`schema_version`:** Whimsy's existing payload has no `vli.schema_version`. The control plane defaults absent `schema_version` to `"0"` and validates `behavioral@0` as exactly what Whimsy sends today. A future Whimsy update adds `schema_version: "1"`.
+4. **`visibility`:** Whimsy's payload has no `visibility` field. Default `"participants"`.
+5. **`iss`/`sub` DID form:** Whimsy uses `did:key:whimsy-system` and a `remoteFingerprint` hash as `sub`. These are not `vrl:` IDs. The control plane accepts legacy `did:key` and opaque subject strings on ingest, creates `vrl:agent:<uuid>` / `vrl:issuer:<uuid>` records lazily, and records the original DID/string in `metadata.legacy_did`. New attestations use `vrl:` IDs.
 
-1. **`type: "behavioral"`** is not in the proposed enum. **Resolution:** add `behavioral` to the allowed `attestation_type` enum. The enum becomes `transaction_summary | kyb | security_audit | negative_incident | behavioral`.
-2. **No `jti`** in Whimsy's current payload (`signJWT` in `verilink.js:131` does not set `jti`). **Resolution:** dedup is on `token_digest` (sha256 of the JWS), not `jti`. Whimsy's existing tokens dedup correctly without modification. `jti` is advisory; a future Whimsy update may add it.
+### 6.4 Per-type facts schemas
 
-The Whimsy attestation payload (`vli: { type: "behavioral", facts, trust_level_delta }`) is otherwise compatible with the existing `pkg/attestation` schema. Whimsy's `remoteFingerprint` (a hash of `userId:remoteId:provider`, representing a storage remote, not an autonomous agent) means Whimsy is the first **issuer**, not a proof of provider-side agent identification. A separate reference customer demonstrating agent identification is needed before launch (open item, Section 15).
+Versioned JSON Schemas in `docs/specs/`, required before ingest. `vli.schema_version` is mandatory; unknown versions → 4xx. `additionalProperties: false` for typed schemas. Maximum serialized size: 8 KB. Maximum depth: 4.
+
+- `transaction_summary@1`: observation window (start, end), success count, failure count, dispute count.
+- `kyb@1`: status, verifier, jurisdiction, verification timestamp, expiry timestamp.
+- `security_audit@1`: standard, result, auditor, report digest, audit timestamp.
+- `negative_incident@1`: category, severity, occurrence timestamp, evidence digest.
+- `behavioral@0`: exactly what Whimsy sends today (`{ action, ... }`, `additionalProperties: true`, no required fields). `behavioral@1` (future): schema URI, observation timestamp, bounded issuer-defined data.
+
+Facts never feed VeriRank — only `trust_delta` does. The schemas are hygiene, not math.
 
 ---
 
@@ -613,29 +741,35 @@ The Whimsy attestation payload (`vli: { type: "behavioral", facts, trust_level_d
 
 ### 7.1 Edge (`edge-verifier`, Go)
 
-The data path never crashes. Three distinct states, **not conflated**:
+Three distinct states, not conflated:
 
 | State | Definition | Behavior |
 |---|---|---|
-| **Unknown fingerprint** | The fingerprint is not in the current snapshot's alias map | Score 0; apply policy default action (deny). Set `X-Verilink-Status: Denied`, `X-Verilink-Reason: unknown`. This is the **common case**, not an error. |
-| **Degraded (sync stale)** | The last successful snapshot is older than `MAX_SNAPSHOT_AGE` (v1 default: 5 minutes) | Fail closed: return 503 with `X-Verilink-Mode: stale`. The edge does not serve a stale snapshot beyond the max age — a revoked or newly blacklisted agent could otherwise remain allowed indefinitely. |
-| **Degraded (sync unreachable, snapshot fresh)** | The sync API is unreachable but the last snapshot is within `MAX_SNAPSHOT_AGE` | Serve the snapshot; set `X-Verilink-Mode: degraded`. Retry sync with exponential backoff (1s → 30s cap). Surface to the control plane via the telemetry channel so the dashboard shows the edge node as `stale`. |
+| **Unknown fingerprint** | Not in the current snapshot's alias map | Score 0, `score_reason: unknown`, policy default action. The **common case**, not an error. |
+| **Degraded (sync stale)** | Time since last authenticated SSE heartbeat > `MAX_SNAPSHOT_AGE` (default 5 min, tunable 1–30 min per tenant) | 503, `X-Verilink-Mode: stale`. The edge does not serve a snapshot older than the max age. |
+| **Degraded (sync unreachable, contact fresh)** | Sync API unreachable, last heartbeat within `MAX_SNAPSHOT_AGE` | Serve the snapshot, `X-Verilink-Mode: degraded`. Retry sync (1s → 30s backoff). Surface `stale` to the control plane. |
 
-The in-memory snapshot is an **immutable map** (atomic swap on update), not an LRU — a known agent must never be silently evicted. A cache miss in the current snapshot means "unknown" (state 1), never "fall back to an older snapshot."
+Freshness is **time since last authenticated heartbeat/contact** (heartbeats every 30s), not time since last score change. A quiet network does not make a healthy edge look stale.
+
+The in-memory snapshot is an **immutable map** (atomic swap), not an LRU. A cache miss means "unknown" (state 1), never "fall back to an older snapshot."
+
+**Opt-in fail-open:** availability-sensitive tenants may set `policy.fail_open_expired = true`, which serves `X-Verilink-Mode: expired` and proxies anyway when the snapshot is stale, rather than 503. Default is fail-closed.
 
 ### 7.2 Control plane (`control-plane` TS)
 
-Whimsy-style structured errors via an adapted `shared/errors/` module. Express error middleware normalizes. Attestation ingest: **signature and schema are verified synchronously; storage is transactional; only score recomputation is enqueued.** Invalid attestations receive a deterministic 4xx — they are never asynchronously accepted. `RunVeriRank` failures retry three times then dead-letter; `network_scores` stays at the last-good value with `computed_at` aging; the dashboard shows a staleness warning after one hour.
+Whimsy-style structured errors. Attestation ingest: signature + schema verified **synchronously**; storage transactional; only score recomputation enqueued. Invalid → deterministic 4xx. `RunVeriRank` failures retry 3x then dead-letter; `network_scores` stays at last-good; dashboard shows staleness warning after 1h.
 
-**Decision-event ingestion** is decoupled from the data path: the edge writes decisions to a bounded local WAL, flushes in batches to the control plane's `events/` domain, and uses at-least-once delivery with dedup on (edge_node_id, decided_at, fingerprint). If the WAL fills (the control plane is unreachable for too long), the edge **blocks** new decisions once the WAL is at capacity — this is the explicit tradeoff: an audit gap is preferable to silently dropping decisions. The success criterion is relaxed accordingly (Section 16).
+**Decision-event ingestion** is decoupled from the data path. The edge writes decisions to a bounded local WAL with a per-node monotonic `wal_seq`. It flushes in batches to the control plane. **When the WAL is full, the edge drops the oldest events and increments `decisions_dropped_total`** (a Prometheus counter that is itself reported and alerted on). It does **not** block the data path — a telemetry-ingest outage must not become a customer-API outage. `MAX_SNAPSHOT_AGE` fail-closed already bounds how long an edge can run disconnected, bounding the unrecorded-decision window. Enterprise tenants may opt into a no-drop mode (`policy.no_drop_decisions = true`) that does block when the WAL fills; this is not the default.
+
+**Sampling policy:** the edge sends per-minute aggregates (tenant, fingerprint-or-ID, action, count) for all decisions, plus sampled raw events: **all denies + 1% of allows** (tunable per tenant). This matches what the dashboard displays (aggregated counters + sampled feed).
 
 ### 7.3 Trust engine (`trust-engine` Go)
 
-Stateless gRPC. Returns standard codes (`InvalidArgument`, `Unauthenticated`, `Internal`). `RunVeriRank` is idempotent given the same inputs and `evaluation_time`. Panics in a VeriRank run are caught at the handler boundary and returned as `Internal`; the goroutine survives.
+Stateless gRPC. `RunVeriRank` is idempotent given the same inputs + `evaluation_time`. Panics caught at the handler boundary; goroutine survives.
 
 ### 7.4 Failure notifications
 
-**Sentry plus Prometheus/Alertmanager** for service failures. The n8n `settings.errorWorkflow` / Error Trigger pattern applies to n8n workflow executions, not to an Express service — it is removed from this design. An n8n webhook may be added later as an optional downstream notification integration, but it is not the failure-detection mechanism.
+Sentry + Prometheus/Alertmanager for service failures. `decisions_dropped_total` is an alert. No n8n error-workflow (that pattern applies to n8n workflow executions, not an Express service).
 
 ---
 
@@ -643,13 +777,13 @@ Stateless gRPC. Returns standard codes (`InvalidArgument`, `Unauthenticated`, `I
 
 | Signal | Source | Tool |
 |---|---|---|
-| **Metrics** | `edge-verifier` (latency histogram of **local decision overhead only**, excluding upstream service time; allow/deny counter; cache hit rate; WAL depth), `control-plane` (request rate, VeriRank duration, sync lag, decision-event ingest lag), `trust-engine` (gRPC duration, verify failures) | Prometheus scrape + Grafana |
-| **Logs** | Structured JSON (adapt `shared/logger.js`). | Loki or CloudWatch |
-| **Traces** | OpenTelemetry across all three languages; trace context propagated edge → control plane → trust engine. | OTLP collector → Tempo or Jaeger |
-| **Error tracking** | Sentry (adapt Whimsy's `@sentry/node` and `@sentry/react` setup). | Sentry |
-| **Internal dashboards** | Graph size, VeriRank lag, edge-node health, tenant signups. | Grafana |
-| **Tenant-facing dashboards** | Inside the product: providers see aggregated allow/deny counters and sampled decisions (not every decision); builders see their agent's score history. | Product dashboard (recharts) |
-| **Healthchecks** | `edge-verifier /healthz` (cache age, last sync version, backend reachability), `control-plane /healthz` (DB, Redis, trust-engine reachability), `trust-engine /healthz`. | Kubernetes liveness/readiness probes |
+| **Metrics** | `edge-verifier` (local decision overhead histogram — excluding upstream service time; allow/deny counter; cache hit rate; WAL depth; `decisions_dropped_total`; SSE heartbeat age), `control-plane` (req rate, VeriRank duration, sync lag, decision ingest lag), `trust-engine` (gRPC duration, verify failures) | Prometheus + Grafana |
+| **Logs** | Structured JSON. **`facts`/`facts_private` never written to logs.** | Loki or CloudWatch |
+| **Traces** | OpenTelemetry across all three languages. | OTLP → Tempo/Jaeger |
+| **Error tracking** | Sentry. | Sentry |
+| **Internal dashboards** | Graph size, VeriRank lag, edge health, tenant signups, `decisions_dropped_total`. | Grafana |
+| **Tenant dashboards** | Aggregated allow/deny counters + sampled feed; agent score history. | Product dashboard (recharts) |
+| **Healthchecks** | `/healthz` on all three services. | K8s probes |
 
 ---
 
@@ -657,75 +791,75 @@ Stateless gRPC. Returns standard codes (`InvalidArgument`, `Unauthenticated`, `I
 
 | Layer | Approach |
 |---|---|
-| **Go core (`pkg/*`)** | Existing unit tests stay. Add property-based tests for VeriRank (decay invariants, monotonicity under positive attestations, unrooted-cluster zero-score invariant). New tests for the `evaluation_time` determinism fix and `trust_weight` application. gRPC contract tests for `cmd/trust-engine`. |
-| **Go edge (`cmd/edge-verifier`)** | Integration test: spin up a mock backend, send trusted, unknown, and denied requests, assert status + headers. The **latency benchmark (`VR-002`) is a dedicated-hardware nightly-staging gate**, not a PR gate — shared CI runners cannot reliably measure sub-millisecond p99. The gate measures **local decision overhead only** (excluding upstream service time) on a pinned performance runner with a fixed workload. |
-| **TS control plane** | Jest (adapt Whimsy's setup). Unit tests for adapted modules. Integration tests against a real Postgres and Redis. Contract tests against the gRPC trust engine using a test container. |
-| **TS dashboard** | Vitest (unit) + Playwright (e2e). Golden path: onboard a tenant, register an agent, submit an attestation, see the score, configure a policy. |
-| **Cross-language parity (post-v1)** | `scripts/parity-check.sh` runs a matrix of raw HTTP/TLS request fixtures against Go `pkg/fingerprint` and Rust `edge-rs/fingerprint` to guarantee byte-for-byte SHA-256 agreement across all TLS client hellos. This is the gate for the Rust edge to graduate from post-v1. |
-| **Load** | **k6** (selected over oha) against `edge-verifier` for the 10k req/s `VR-002` gate, nightly in staging. |
-| **Security** | `semgrep` on TS and Go. `cargo audit` on Rust (when edge-rs lands). Secret scan pre-commit. |
+| **Go core (`pkg/*`)** | Existing tests + property-based tests for VeriRank (decay invariants, monotonicity, unrooted-cluster zero-score, `trust_weight` application, `evaluation_time` determinism). gRPC contract tests for `cmd/trust-engine`. |
+| **Go edge (`cmd/edge-verifier`)** | Integration: mock backend, signed + unsigned + unknown requests, assert status + headers. **`VR-002` latency benchmark is a dedicated-hardware nightly-staging gate**, measuring local decision overhead only. **The first implementation step is a Go baseline benchmark** (`scripts/benchmark-baseline.sh`) — if it doesn't meet 10k req/s at <1ms p99, revisit the edge decision. |
+| **TS control plane** | Jest. Unit tests for adapted modules. Integration tests against real Postgres + Redis. Contract tests against gRPC trust engine. |
+| **TS dashboard** | Vitest + Playwright. Golden path: onboard, register agent, submit attestation, see score, configure policy. |
+| **Cross-language parity (post-v1)** | `scripts/parity-check.sh`: fixture corpus + Go-reference golden hashes committed and locked in CI. Rust must match them to graduate post-v1. **v1 has no cross-language parity criterion** — a one-language reference is not parity. |
+| **Load** | k6 against `edge-verifier`, nightly in staging. |
+| **Security** | `semgrep` on TS and Go. Secret scan pre-commit. |
 
 ---
 
 ## 10. Deployment
 
-### 10.1 Artifacts (in `deploy/`)
+### 10.1 Artifacts
 
-- `docker/Dockerfile.edge` — Go, multi-stage, distroless, `CGO_ENABLED=0` (also yields the static binary).
+- `docker/Dockerfile.edge` — Go, multi-stage, distroless, `CGO_ENABLED=0`.
 - `docker/Dockerfile.control-plane` — TypeScript, multi-stage.
 - `docker/Dockerfile.trust-engine` — Go, multi-stage, distroless.
-- `docker/docker-compose.self-host.yml` — all three services plus Postgres and Redis, for self-hosted OSS users.
-- `helm/` — configurable topology: `edge.kind` selects `DaemonSet` | `Deployment` | (static binary users skip Helm). Control-plane and trust-engine as Deployments with HPAs. Postgres and Redis via upstream charts.
-- `systemd/verilink-edge.service` — unit template + sample config for bare-metal/VM deployments.
-- **Static binary releases:** Linux x86_64 and aarch64, statically linked (musl-equivalent for Go: `CGO_ENABLED=0` + `rustls` if Rust), published to GitHub Releases with checksums, SBOM, and signed releases.
+- `docker/docker-compose.self-host.yml` — all three + Postgres + Redis.
+- `helm/` — configurable topology (`edge.kind`: DaemonSet | Deployment). Control-plane + trust-engine as Deployments with HPAs. Postgres + Redis via upstream charts.
+- `systemd/verilink-edge.service` — unit template + sample config.
+- **Static binary releases:** Linux x86_64 and aarch64, `CGO_ENABLED=0`, published to GitHub Releases with checksums, SBOM, and signed releases.
 
 ### 10.2 Local dev
 
-`scripts/dev-up.sh` — orchestrates all three services plus Postgres and Redis via Docker Compose, seeds the bootstrap registry, and prints the dashboard URL.
+`scripts/dev-up.sh` — orchestrates all three services + Postgres + Redis via Docker Compose, seeds the bootstrap registry, prints the dashboard URL.
 
 ### 10.3 Hosted SaaS
 
-Hosted in OCI Toronto (us-ashburn-1 or the primary OCI region), co-located with Whimsy/Codero. The hosted control plane runs the same code as self-host, with `VERILINK_MULTI_TENANT=true`. Single region in v1. **Backup/restore testing, RPO/RTO, and off-host backup requirements are in scope for v1** — the hosted Postgres has daily snapshots + WAL archiving, with a quarterly restore drill.
+Hosted in **OCI `ca-toronto-1` (Toronto)**, co-located with Whimsy/Codero. `VERILINK_MULTI_TENANT=true`. Single region in v1. Postgres daily snapshots + WAL archiving; **quarterly restore drill**; RPO/RTO verified.
 
 ### 10.4 Docs site
 
-Docusaurus, in `docs/`, versioned, with MDX and OpenAPI/Redoc rendering. Schema references, quickstarts, integration guides (Envoy/Nginx/Kong), self-host guide.
+Docusaurus, in `docs/`, versioned, MDX + OpenAPI/Redoc rendering.
 
 ---
 
 ## 11. Dashboard
 
-TypeScript Vite SPA, reusing the Numera/Whimsy kit (Radix UI, TanStack Router/Query, Tailwind, shadcn-style components, recharts, sonner, Sentry). Served by the control plane behind the same auth context.
+TypeScript Vite SPA, reusing the Numera/Whimsy kit. Served by the control plane.
 
 ### 11.1 Provider view
 
-- Trust-score summary: aggregated allow/deny counters over time (recharts), top agents by traffic, top denied fingerprints. **No interactive graph explorer in v1.**
-- Sampled decision feed (not every decision — see 7.2).
-- Agent list with current canonical scores and last-seen.
-- Policy editor: threshold slider, fingerprint-pattern rules. (No per-tenant issuer-weight overrides in v1 — issuer weights are global, applied inside VeriRank; per-tenant weighting is deferred.)
+- Trust-score summary: aggregated allow/deny counters over time (recharts), top agents by traffic, top denied fingerprints.
+- Sampled decision feed (all denies + sampled allows).
+- Agent list with canonical scores, `blacklisted` flag, `score_reason`.
+- Policy editor: threshold slider, `below_threshold_action`, allow/deny fingerprint lists, `unsigned_max_score` cap, `fail_open_expired` toggle.
 - API key management.
-- Edge-node sync status (last sync version, cursor lag, stale flag).
+- Edge-node sync status (last sync version, heartbeat age, `stale` flag).
 - Billing portal links (Stripe Customer Portal).
 
 ### 11.2 Agent-builder view
 
-- Registered agents list (by canonical DID + observed fingerprint aliases + assurance level).
-- Attestation feed: incoming (counterparties attesting to this agent) and outgoing (this builder attesting about others).
+- Registered agents (by stable ID + key ids + assurance level).
+- Attestation feed (incoming + outgoing), with `visibility` indicator.
 - Trust score over time (recharts, from `network_score_history`).
 - Issuer relationships.
 - Billing portal links.
-- **No reputation badge in v1** (deferred to post-v1).
 
 ### 11.3 Admin (VeriLink staff) view
 
-- Bootstrap registry editor (add/de-emphasize seed issuers and agents).
+- Bootstrap registry editor with `current_weight`, `de_emphasis_reason`, `approved_by`.
+- De-emphasis signal: sustained ≥10× organic-to-bootstrap attestation ratio over 30 days per seed; **staff clicks to initiate stepwise reduction** (not automatic).
 - Tenant list with plan and usage.
 - Graph health: total nodes, total edges, VeriRank lag, bootstrap-vs.-organic ratio.
-- Issuer verification queue (proof-of-key-control challenges, manual review for higher trust weights).
+- Issuer verification queue (proof-of-key-control challenges, manual review for higher `trust_weight`).
 
 ### 11.4 Graph visualization (v1)
 
-**Read-only summaries only.** Node/edge counts, top issuers by outgoing attestation volume, path-summary cards for a selected agent (which roots reach it, hop count, decayed contribution). The interactive `@xyflow/react` explorer is deferred to post-v1.
+Read-only summaries only: node/edge counts, top issuers by outgoing attestation volume. **Path-summary cards are removed** (they require hop/contribution data the v1 engine cuts). Interactive `@xyflow/react` explorer deferred to post-v1.
 
 ---
 
@@ -733,77 +867,84 @@ TypeScript Vite SPA, reusing the Numera/Whimsy kit (Radix UI, TanStack Router/Qu
 
 | Client | Status | v1 action |
 |---|---|---|
-| `client/go` | Existing, working | Unchanged API; update default URL to the hosted control plane. |
-| `client/node` | Existing, vendored from source | Publish to npm as `@verilink/node` with TypeScript types. |
-| `client/rust` | Deferred with `edge-rs` | Post-v1. |
-
-All clients target the same REST API surface (`/v1/attestations/submit`, `/v1/trust`, `/v1/sync/snapshot`, `/v1/sync/events`). The Node client's existing `VeriLinkClient.fromEnv()` pattern is preserved.
+| `client/go` | Existing | Add HTTP Message Signature signing helper; update default URL. |
+| `client/node` | Existing | Publish to npm as `@verilink/node` with TS types + signing helper. |
+| `client/rust` | Deferred | Post-v1. |
 
 ---
 
 ## 13. v1 scope and sequencing
 
-The v1 scope is the full control plane plus the hardened OSS toolkit, both sides onboarding from day one — with the edge staying Go (Rust deferred). Sequencing:
-
-1. **Monorepo restructure + CI** — new directory layout, CI for Go + TS, cross-language parity harness scaffold (Go-only in v1; Rust side lands post-v1).
-2. **Engine fixes** — `evaluation_time` determinism, `trust_weight` application, `subject_did` output keying. New tests. This unblocks the control plane.
-3. **Trust-engine gRPC** — wrap `pkg/*` in the gRPC server per the corrected contract (4.4). Contract tests.
-4. **Control-plane TS foundation** — adapt Whimsy's `db/`, `middleware/`, `authz/`, `shared/` modules. Stand up Express with healthcheck. Run migrations against a fresh Postgres.
-5. **Data model + domains** — implement the schema in Section 5: global graph tables + tenant-scoped tables. `tenant`, `registry`, `graph`, `policy`, `bootstrap`, `billing`, `events` domains.
-6. **Attestation ingest end-to-end** — synchronous verify (caller supplies issuer public key), transactional store, dedup on `token_digest`, enqueue VeriRank.
-7. **Network score computation** — global VeriRank run, write to `network_scores` + `network_score_history`, advance `score_version`.
-8. **Edge sync API** — `GET /v1/sync/snapshot` (versioned, compressed) + SSE deltas keyed by `Last-Event-ID`; `410 Gone` on expired cursor.
-9. **Go edge hardening** — TLS termination, versioned sync client, atomic in-memory snapshot (immutable map), bounded local WAL for decision events, atomic disk snapshot writes.
-10. **Dashboard** — fork the kit; provider + agent-builder views; read-only graph summaries; Stripe portal links.
-11. **Bootstrap registry + cold-start seed** — curate the initial root-of-truth, seed script, derive `is_bootstrap` into `issuers`/`agents`.
-12. **Deployment artifacts** — Dockerfiles, Helm chart (configurable topology), systemd unit, static binary releases.
-13. **Clients** — publish Node to npm; update Go client.
-14. **Observability + security hardening** — Prometheus (Sentry already wired in step 4), Alertmanager, OpenTelemetry, semgrep, secret scan.
-15. **Whimsy integration migration** — point `shared/verilink.js` at the hosted control plane; add `behavioral` to the enum; Whimsy becomes the first seeded issuer.
-16. **Docs site** — Docusaurus; schema refs, quickstarts, integration guides, self-host guide.
-17. **Backup/restore drill** — quarterly Postgres restore test in the hosted environment; verify RPO/RTO.
+1. **Go baseline benchmark** (`scripts/benchmark-baseline.sh`) — produce the `VR-002` artifact. If it fails, revisit the edge decision. **This is the first gate.**
+2. **Monorepo restructure + CI** — directory layout, CI for Go + TS, parity harness scaffold (Go-only).
+3. **Engine fixes** — `evaluation_time` determinism, `trust_weight`, `blacklisted` + `score_reason` + `entity_kind` output, `seed_score` removal, max-path documentation. New tests.
+4. **Trust-engine gRPC** — client-streamed `RunVeriRank`, `VerifyAttestation` with candidate keys, `Fingerprint`. Contract tests.
+5. **Control-plane TS foundation** — adapt Whimsy's `db/`, `middleware/`, `authz/`, `shared/`. Express + healthcheck. Migrations.
+6. **Data model + domains** — schema in Section 5. `tenant`, `registry`, `graph`, `policy`, `bootstrap`, `billing`, `events`, `sync` domains.
+7. **Request-auth protocol** — HTTP Message Signature verification in the Go edge; signing helpers in Go + Node clients.
+8. **Attestation ingest end-to-end** — pre-parse JWS for `iss`/`iat`, resolve candidate keys, synchronous verify, schema validation, dedup on `token_digest`, lazy subject creation, enqueue VeriRank.
+9. **Network score computation** — global VeriRank run (chunked), write to `network_scores` + `network_score_history` (on change), append to `sync_events`.
+10. **Sync event log + edge sync** — snapshot + SSE stream with heartbeats; `410 Gone` on expired cursor.
+11. **Go edge hardening** — HTTP Message Signatures, versioned sync client, atomic in-memory snapshot, bounded local WAL (drop-oldest + counter), atomic disk snapshots.
+12. **Dashboard** — fork the kit; provider + agent-builder + admin views; read-only graph summaries; Stripe portal links.
+13. **Bootstrap registry + cold-start seed** — curate initial root-of-truth; seed script; derive `is_bootstrap`.
+14. **Deployment artifacts** — Dockerfiles, Helm, systemd unit, static binary releases.
+15. **Clients** — publish Node to npm; update Go client with signing.
+16. **Observability + security hardening** — Prometheus, Alertmanager (alert on `decisions_dropped_total`), OpenTelemetry, semgrep, secret scan.
+17. **Whimsy integration migration** — point `shared/verilink.js` at hosted control plane; `behavioral@0` schema; lazy `vrl:` ID creation.
+18. **Codero reference deployment** — guard `POST /memory/observations`; OpenCode/Codex session signs requests.
+19. **Docs site** — Docusaurus; schema refs, quickstarts, integration guides, self-host guide.
+20. **Backup/restore drill** — quarterly Postgres restore; RPO/RTO verified.
+21. **Privacy review** — counsel validates retention/erasure model before processing personal data.
 
 ---
 
 ## 14. Out of scope for v1
 
 - Rust edge verifier (deferred to post-v1 behind the parity harness).
-- Rust client (deferred with the Rust edge).
-- Decentralized DID resolution beyond `did:key` (the bootstrap registry substitutes for a DID network in v1).
-- Per-tenant issuer weighting (issuer weights are global; per-tenant weighting undermines the meaning of a portable score and requires separate graph computation).
-- The `challenge` action (no format/lifecycle designed; v1 is allow/deny only).
-- Interactive trust-graph explorer (`@xyflow/react`).
+- Rust client.
+- Decentralized DID resolution beyond `did:key` verification methods.
+- Per-tenant issuer weighting (issuer weights are global).
+- `challenge` action.
+- Interactive trust-graph explorer.
+- Path-summary cards (require hop/contribution data).
 - Embeddable reputation badge.
-- Non-HTTP protocols (gRPC, MQTT) at the edge.
-- A mobile dashboard.
-- SSO/SAML for enterprise tenants (OIDC only in v1; SAML post-v1).
-- mTLS for edge-to-control-plane (API key over TLS in v1).
-- Metered/usage-based billing (fixed-tier subscriptions only).
-- Multi-region hosted deployment (single region in v1).
-- PostgreSQL Row-Level Security (application-level isolation in v1; RLS is a hardening post-v1).
+- Non-HTTP protocols at the edge.
+- Mobile dashboard.
+- SSO/SAML (OIDC only).
+- mTLS for edge-to-control-plane.
+- Metered/usage-based billing.
+- Multi-region hosted deployment.
+- PostgreSQL Row-Level Security (application-level in v1).
+- `kid` in JWS signing (the Go `Sign()` doesn't set one today; v1 resolves candidate keys by `iat` from `issuer_keys`. Adding `kid` to signing is a clean post-v1 fix).
+- Cross-language parity (Rust must match Go golden hashes to graduate post-v1; v1 is Go-only).
+- Automatic bootstrap de-emphasis (manual, metric-gated in v1).
+- Field-level facts visibility (attestation-level `visibility` only).
 
 ---
 
-## 15. Open questions for round 2
+## 15. Open questions for round 3
 
-1. **Second reference customer for provider-side agent identification.** Whimsy proves the issuer side (attesting about remotes) but not the provider side (identifying autonomous agents at the edge). A second reference customer demonstrating real agent identification is needed before public launch. Candidate: any internal Codero/Numera API that already receives agent-like traffic.
-2. **`MAX_SNAPSHOT_AGE` default.** 5 minutes is proposed; too short and sync churn dominates, too long and a revoked agent stays allowed. Needs a tunable per-tenant override.
-3. **Attestation `facts` schema per type.** The enum is defined (`transaction_summary | kyb | security_audit | negative_incident | behavioral`) but the per-type JSON schema for `facts` is not. Needed before ingest goes live.
-4. **Privacy redaction `_private` convention.** The prefix convention needs a formal spec and tests before launch.
-5. **Bootstrap de-emphasis trigger.** At what organic-attestation volume does a bootstrap issuer get `de_emphasized_at` set? A ratio threshold (e.g., organic attestations ≥ 10x the bootstrap's) is proposed.
+1. **`behavioral@0` vs `@1` cutover.** Whimsy ships `@0` (no `schema_version`). Should the hosted control plane accept `@0` indefinitely or sunset it with a migration deadline? Proposed: accept `@0` for 6 months post-launch, then require `@1`.
+2. **No-drop mode WAL capacity.** What is the default WAL size for enterprise tenants who opt into `no_drop_decisions`? Needs a sizing recommendation tied to expected decision rate and sync outage tolerance.
+3. **HTTP Message Signature algorithm negotiation.** v1 mandates Ed25519 (`alg="ed25519"`). Should the protocol advertise supported algorithms via a well-known endpoint for future extensibility (e.g., P-256)? Proposed: yes, `GET /.well-known/verilink-params` returns `{ "signature_algorithms": ["ed25519"] }`.
+4. **Snapshot compression format.** gzip vs zstd. Proposed: zstd (better ratio + speed; the Go edge has a mature zstd library).
+5. **Privacy counsel review timing.** Step 21 in sequencing. Should it be earlier (before the privacy endpoints are built in step 12) to avoid rework?
 
 ---
 
 ## 16. Success criteria for v1
 
-- [ ] A provider can sign up, get an API key, run the Go `edge-verifier` in front of a backend, and receive allow/deny decisions on real agent traffic, end-to-end, in under 15 minutes from signup.
-- [ ] The edge verifier holds the sub-millisecond p99 **local decision overhead** (excluding upstream service time) at 10k req/s (the `VR-002` gate), measured on a pinned nightly-staging runner, not shared CI.
-- [ ] An agent builder can register an agent's public-key identity, receive an attestation from a counterparty, and see a non-zero trust score in the dashboard.
+- [ ] A provider can sign up, get an API key, run the Go `edge-verifier` in front of a backend, and receive allow/deny decisions on signed agent traffic, end-to-end, in under 15 minutes from signup.
+- [ ] **Go baseline benchmark** (`scripts/benchmark-baseline.sh`) passes: 10k req/s with sub-millisecond p99 local decision overhead (excluding upstream service time) on a pinned nightly-staging runner.
+- [ ] An agent builder can register an agent's public-key identity, sign requests with HTTP Message Signatures, receive an attestation from a counterparty, and see a non-zero trust score in the dashboard.
 - [ ] The bootstrap registry is seeded and providers see a non-empty graph on first sync.
-- [ ] Whimsy's `shared/verilink.js` points at the hosted control plane and its `behavioral` attestations appear in the graph and dedup correctly without `jti`.
+- [ ] Whimsy's `shared/verilink.js` points at the hosted control plane; its `behavioral@0` attestations appear in the graph and dedup correctly on `token_digest`.
+- [ ] Codero's `POST /memory/observations` is guarded by VeriLink; an OpenCode/Codex session signing requests is allowed; unsigned requests are capped or denied per policy.
 - [ ] Self-hosted deployment via `docker-compose.self-host.yml` works with no manual SQL.
-- [ ] The Node client is published to npm.
-- [ ] Cross-language fingerprint parity test passes in CI (Go reference; Rust side lands post-v1).
-- [ ] `audit_log` records every state-changing administrative event; `decision_events` records edge decisions via the bounded local WAL with at-least-once delivery and dedup. **If the WAL fills during a prolonged control-plane outage, the edge blocks new decisions rather than silently dropping them** — the audit-completeness criterion is satisfied under this explicit tradeoff.
+- [ ] The Node client is published to npm with signing support.
+- [ ] `audit_log` records every state-changing administrative event; `decision_aggregates` + `decision_samples` record edge decisions via the bounded local WAL with at-least-once delivery and dedup on `(edge_node_id, wal_seq)`. **Dropped decisions are counted via `decisions_dropped_total` and alerted on — no silent loss.** Enterprise no-drop mode blocks when the WAL fills (opt-in).
 - [ ] All three services have healthchecks wired to Kubernetes probes in the Helm chart.
-- [ ] Postgres restore drill passes in the hosted environment; RPO/RTO verified.
+- [ ] Postgres restore drill passes; RPO/RTO verified.
+- [ ] `blacklisted` and `score_reason` are surfaced on the dashboard and in edge response headers, not inferred from `score == 0`.
+- [ ] The unified sync event log propagates score, alias, key-revocation, and policy changes to connected edges via SSE within one minute.
