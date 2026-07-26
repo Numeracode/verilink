@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -44,19 +43,8 @@ func newGRPCServer() (*grpc.Server, *health.Server) {
 func main() {
 	grpcPort := flag.Int("grpc-port", 9091, "gRPC listen port")
 	httpPort := flag.Int("http-port", 8086, "HTTP /healthz listen port")
-	ed25519PubHex := flag.String("ed25519-public-key-hex", "", "hex-encoded Ed25519 public key (REQUIRED)")
 	logLevel := flag.String("log-level", "info", "log level (info, debug)")
 	flag.Parse()
-
-	if *ed25519PubHex == "" {
-		fmt.Fprintln(os.Stderr, "error: --ed25519-public-key-hex is required")
-		flag.Usage()
-		os.Exit(1)
-	}
-	if _, err := hex.DecodeString(*ed25519PubHex); err != nil {
-		fmt.Fprintf(os.Stderr, "error: --ed25519-public-key-hex is not valid hex: %v\n", err)
-		os.Exit(1)
-	}
 
 	if *logLevel == "debug" {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)

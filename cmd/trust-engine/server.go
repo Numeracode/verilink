@@ -38,8 +38,6 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 		seenRoots       = make(map[string]bool)
 	)
 
-	isNaN := func(f float64) bool { return f != f }
-
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -103,7 +101,7 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 				return status.Errorf(codes.InvalidArgument, "principal %s invalid entity_kind %q", p.Principal.Id, p.Principal.EntityKind)
 			}
 			tw := p.Principal.TrustWeight
-			if isNaN(tw) || tw < 0 || tw > 1 {
+			if math.IsNaN(tw) || tw < 0 || tw > 1 {
 				return status.Errorf(codes.InvalidArgument, "principal %s trust_weight %f is non-finite or out of range [0,1]", p.Principal.Id, tw)
 			}
 			principals = append(principals, trust.Principal{
@@ -127,7 +125,7 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			}
 			seenRoots[p.Root.Id] = true
 			w := p.Root.Weight
-			if isNaN(w) || w < 0 || w > 1 {
+			if math.IsNaN(w) || w < 0 || w > 1 {
 				return status.Errorf(codes.InvalidArgument, "root %s weight %f is non-finite or out of range [0,1]", p.Root.Id, w)
 			}
 			roots = append(roots, trust.Root{
@@ -146,8 +144,10 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 	// Validate completeness: every root, every attestation issuer, and every
 	// attestation subject must have a streamed Principal row.
 	principalSet := make(map[string]bool, len(principals))
+	kindByID := make(map[string]trust.EntityKind, len(principals))
 	for _, p := range principals {
 		principalSet[p.ID] = true
+		kindByID[p.ID] = p.EntityKind
 	}
 	for _, r := range roots {
 		if !principalSet[r.ID] {
@@ -157,6 +157,11 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 	for _, c := range claims {
 		if !principalSet[c.Issuer] {
 			return status.Errorf(codes.InvalidArgument, "attestation issuer %s has no streamed Principal row", c.Issuer)
+		}
+		// Issuers must have entity_kind "issuer" or "both" — agent-only
+		// principals cannot issue attestations.
+		if ek := kindByID[c.Issuer]; ek != trust.EntityKindIssuer && ek != trust.EntityKindBoth {
+			return status.Errorf(codes.InvalidArgument, "attestation issuer %s has entity_kind %q (must be issuer or both)", c.Issuer, string(ek))
 		}
 		if !principalSet[c.Subject] {
 			return status.Errorf(codes.InvalidArgument, "attestation subject %s has no streamed Principal row", c.Subject)
