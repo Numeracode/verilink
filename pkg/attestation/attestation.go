@@ -13,6 +13,9 @@ type VerilinkClaims struct {
 	Type            string                 `json:"type"`
 	Facts           map[string]interface{} `json:"facts"`
 	TrustLevelDelta int                    `json:"trust_level_delta"`
+	SchemaVersion   string                 `json:"schema_version,omitempty"`
+	Visibility      string                 `json:"visibility,omitempty"`
+	ObservationID   string                 `json:"observation_id,omitempty"`
 }
 
 // AttestationClaims is the standard JWT claims combined with Verilink facts.
