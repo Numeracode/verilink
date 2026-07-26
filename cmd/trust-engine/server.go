@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"time"
 
@@ -73,6 +74,12 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			}
 			if p.Attestation.IssuerId == "" || p.Attestation.SubjectId == "" {
 				return status.Error(codes.InvalidArgument, "attestation issuer_id and subject_id are required")
+			}
+			if p.Attestation.IssuedAtUnix == 0 {
+				return status.Error(codes.InvalidArgument, "attestation issued_at_unix is required")
+			}
+			if p.Attestation.TrustDelta < math.MinInt32 || p.Attestation.TrustDelta > math.MaxInt32 {
+				return status.Errorf(codes.InvalidArgument, "attestation trust_delta %d out of int32 range", p.Attestation.TrustDelta)
 			}
 			claims = append(claims, protoAttestationToClaims(p.Attestation))
 		case *trustpb.RunChunk_Principal:

@@ -240,7 +240,14 @@ func (e *Engine) propagate(
 		blacklistedThisHop := make(map[string]bool)
 		for _, edge := range edges {
 			if edge.Score < 0 {
-				if issuerScore, ok := scores[edge.Issuer]; ok && issuerScore >= float64(BlacklistIssuerThreshold) {
+				issuerScore, ok := scores[edge.Issuer]
+				if !ok {
+					continue
+				}
+				// Apply trust weight: a zero-weight issuer cannot blacklist.
+				weight := weightByDID[edge.Issuer]
+				effectiveScore := issuerScore * weight
+				if effectiveScore >= float64(BlacklistIssuerThreshold) {
 					blacklistedThisHop[edge.Subject] = true
 				}
 			}

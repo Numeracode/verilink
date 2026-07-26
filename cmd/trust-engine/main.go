@@ -35,7 +35,7 @@ func newGRPCServer() (*grpc.Server, *health.Server) {
 	trustpb.RegisterTrustEngineServer(grpcSrv, &server{})
 
 	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus("verilink.trust.v1.TrustEngine", healthpb.HealthCheckResponse_SERVING)
+	healthSrv.SetServingStatus(trustpb.TrustEngine_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 
 	return grpcSrv, healthSrv
@@ -74,7 +74,14 @@ func main() {
 
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/healthz", healthHandler)
-	httpSrv := &http.Server{Addr: httpAddr, Handler: httpMux}
+	httpSrv := &http.Server{
+		Addr:              httpAddr,
+		Handler:           httpMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		log.Printf("trust-engine HTTP /healthz on %s", httpAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
