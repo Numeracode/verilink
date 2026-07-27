@@ -109,29 +109,52 @@ export async function listAttestations(opts: {
   subjectId?: string;
   limit?: number;
   offset?: number;
+  callerTenantId?: string;
 }): Promise<{ items: Attestation[]; total: number }> {
   const conditions: string[] = [];
   const params: unknown[] = [];
   let idx = 1;
 
   if (opts.issuerId) {
-    conditions.push(`issuer_id = $${idx++}`);
+    conditions.push(`a.issuer_id = $${idx++}`);
     params.push(opts.issuerId);
   }
   if (opts.subjectId) {
-    conditions.push(`subject_id = $${idx++}`);
+    conditions.push(`a.subject_id = $${idx++}`);
     params.push(opts.subjectId);
+  }
+
+  // Visibility filter: participant-only facts visible only to
+  // issuer's owner_tenant_id, subject's owner_tenant_id, or staff.
+  // Public attestations are visible to all callers.
+  if (opts.callerTenantId) {
+    conditions.push(`(
+      a.visibility = 'public'
+      OR i.owner_tenant_id = $${idx}
+      OR s.owner_tenant_id = $${idx}
+    )`);
+    params.push(opts.callerTenantId);
+    idx++;
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = opts.limit || 50;
   const offset = opts.offset || 0;
 
-  const countResult = await pool.query(`SELECT count(*) FROM attestations ${where}`, params);
+  const countResult = await pool.query(
+    `SELECT count(*) FROM attestations a
+     LEFT JOIN principals i ON i.id = a.issuer_id
+     LEFT JOIN principals s ON s.id = a.subject_id
+     ${where}`,
+    params
+  );
   const total = parseInt(countResult.rows[0].count, 10);
 
   const { rows } = await pool.query(
-    `SELECT * FROM attestations ${where} ORDER BY received_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
+    `SELECT a.* FROM attestations a
+     LEFT JOIN principals i ON i.id = a.issuer_id
+     LEFT JOIN principals s ON s.id = a.subject_id
+     ${where} ORDER BY a.received_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
     [...params, limit, offset]
   );
 

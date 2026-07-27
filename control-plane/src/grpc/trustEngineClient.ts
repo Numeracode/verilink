@@ -14,11 +14,13 @@ export interface VerifyPayload {
   attestationType: string;
   factsJson: string;
   trustLevelDelta: number;
+  trustLevelDeltaProvided: boolean;
   issuedAtUnix: number;
   expiresAtUnix: number;
   jti: string;
   schemaVersion: string;
   visibility: string;
+  visibilityProvided: boolean;
   observationId: string;
 }
 
@@ -77,11 +79,16 @@ function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
   const explicitVersion = vli.schema_version ?? vli.schemaVersion;
   const schemaVersion = explicitVersion != null ? String(explicitVersion) : '';
 
-  // Safe number coercion: reject NaN
-  const trustDelta = Number(vli.trust_level_delta ?? vli.trustLevelDelta ?? 0);
-  if (Number.isNaN(trustDelta)) {
+  // Safe number coercion: reject NaN. Preserve absence as undefined
+  // so ingest can require it for native v1.
+  const rawDelta = vli.trust_level_delta ?? vli.trustLevelDelta;
+  const trustLevelDelta = rawDelta != null ? Number(rawDelta) : undefined;
+  if (trustLevelDelta != null && Number.isNaN(trustLevelDelta)) {
     throw new Error('trust_level_delta is not a valid number');
   }
+
+  // Preserve visibility absence as undefined (not defaulted)
+  const rawVisibility = vli.visibility != null ? String(vli.visibility) : undefined;
 
   // Safe facts serialization: validate it's an object, not a pre-serialized string
   let factsJson: string;
@@ -102,12 +109,14 @@ function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
   return {
     attestationType: String(vli.type ?? vli.attestation_type ?? ''),
     factsJson,
-    trustLevelDelta: trustDelta,
+    trustLevelDelta: trustLevelDelta ?? 0,
+    trustLevelDeltaProvided: trustLevelDelta != null,
     issuedAtUnix: Number(jwsPayload.iat ?? 0),
     expiresAtUnix: Number(jwsPayload.exp ?? 0),
     jti: String(jwsPayload.jti ?? ''),
     schemaVersion,
-    visibility: String(vli.visibility ?? 'participants'),
+    visibility: rawVisibility ?? 'participants',
+    visibilityProvided: rawVisibility != null,
     observationId: String(vli.observation_id ?? vli.observationId ?? ''),
   };
 }

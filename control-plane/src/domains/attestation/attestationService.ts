@@ -100,6 +100,17 @@ export async function submitAttestation(opts: {
     throw new AppError(CODES.BAD_REQUEST, 'kid is required for native v1 attestations');
   }
 
+  // Native v1 requires explicit trust_level_delta and visibility;
+  // legacy v0 inherits compatibility defaults
+  if (!isLegacy) {
+    if (!vp.trustLevelDeltaProvided) {
+      throw new AppError(CODES.BAD_REQUEST, 'trust_level_delta is required for native v1 attestations');
+    }
+    if (!vp.visibilityProvided) {
+      throw new AppError(CODES.BAD_REQUEST, 'visibility is required for native v1 attestations');
+    }
+  }
+
   try {
     validateSchema(vp.attestationType, schemaVersion, JSON.parse(vp.factsJson), verifiedIssuerId);
   } catch (err: any) {
@@ -239,6 +250,7 @@ export async function listAttestations(opts: {
   subjectId?: string;
   limit?: number;
   offset?: number;
+  callerTenantId?: string;
 }) {
   return attestationRepo.listAttestations(opts);
 }
