@@ -33,7 +33,8 @@ router.get('/', requireScope('attest:read'), defineHandler({
       subjectId: req.query.subject_id as string,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
-      callerTenantId: req.user?.tenantId || undefined,
+      callerTenantIds: req.user?.tenantIds || (req.user?.tenantId ? [req.user.tenantId] : []),
+      isStaff: req.user?.isStaff || false,
     });
     ok(res, result);
   },

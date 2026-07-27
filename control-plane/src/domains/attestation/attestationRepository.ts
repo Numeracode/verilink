@@ -109,7 +109,8 @@ export async function listAttestations(opts: {
   subjectId?: string;
   limit?: number;
   offset?: number;
-  callerTenantId?: string;
+  callerTenantIds?: string[];
+  isStaff?: boolean;
 }): Promise<{ items: Attestation[]; total: number }> {
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -124,17 +125,24 @@ export async function listAttestations(opts: {
     params.push(opts.subjectId);
   }
 
-  // Visibility filter: participant-only facts visible only to
-  // issuer's owner_tenant_id, subject's owner_tenant_id, or staff.
-  // Public attestations are visible to all callers.
-  if (opts.callerTenantId) {
-    conditions.push(`(
-      a.visibility = 'public'
-      OR i.owner_tenant_id = $${idx}
-      OR s.owner_tenant_id = $${idx}
-    )`);
-    params.push(opts.callerTenantId);
-    idx++;
+  // Visibility filter: staff bypass all restrictions.
+  // Participant-only facts visible only to callers who own the
+  // issuer or subject principal (via owner_tenant_id). Public
+  // attestations are visible to all callers.
+  if (!opts.isStaff) {
+    const tenantIds = opts.callerTenantIds || [];
+    if (tenantIds.length > 0) {
+      conditions.push(`(
+        a.visibility = 'public'
+        OR i.owner_tenant_id = ANY($${idx}::uuid[])
+        OR s.owner_tenant_id = ANY($${idx}::uuid[])
+      )`);
+      params.push(tenantIds);
+      idx++;
+    } else {
+      // No tenant context: public only
+      conditions.push(`a.visibility = 'public'`);
+    }
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

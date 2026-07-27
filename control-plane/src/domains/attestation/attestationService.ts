@@ -250,7 +250,8 @@ export async function listAttestations(opts: {
   subjectId?: string;
   limit?: number;
   offset?: number;
-  callerTenantId?: string;
+  callerTenantIds?: string[];
+  isStaff?: boolean;
 }) {
   return attestationRepo.listAttestations(opts);
 }

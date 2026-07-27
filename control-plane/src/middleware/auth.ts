@@ -121,9 +121,9 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
 
   const userId = rows[0].id;
 
-  // Get tenant membership (v1 simplification: first matching tenant)
+  // Get all tenant memberships (user may belong to multiple tenants)
   const { rows: memberships } = await pool.query(
-    `SELECT tenant_id, role FROM tenant_memberships WHERE user_id = $1 LIMIT 1`,
+    `SELECT tenant_id, role FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id`,
     [userId]
   );
 
@@ -132,6 +132,9 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     userId,
     tenantId: memberships[0]?.tenant_id || null,
     role: memberships[0]?.role || 'member',
+    tenantIds: memberships.map((m: { tenant_id: string }) => m.tenant_id),
+    roles: memberships.map((m: { role: string }) => m.role),
+    isStaff: memberships.some((m: { role: string }) => m.role === 'staff' || m.role === 'admin'),
   };
 
   next();
@@ -171,6 +174,9 @@ declare global {
         tenantId?: string | null;
         role?: string;
         scopes?: string[];
+        tenantIds?: string[];
+        roles?: string[];
+        isStaff?: boolean;
       };
     }
   }
