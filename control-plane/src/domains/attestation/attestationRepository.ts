@@ -1,4 +1,5 @@
 // control-plane/src/domains/attestation/attestationRepository.ts
+import { createHash } from 'node:crypto';
 import { pool } from '../../db/transaction.js';
 import type { PoolClient } from 'pg';
 
@@ -94,8 +95,7 @@ export async function findObservationPeer(
 }
 
 function hashToLockKey(s: string): bigint {
-  const hash = require('node:crypto').createHash('sha256').update(s).digest();
-  // Use first 8 bytes as a bigint for pg_advisory_xact_lock
+  const hash = createHash('sha256').update(s).digest();
   return hash.readBigInt64BE(0);
 }
 

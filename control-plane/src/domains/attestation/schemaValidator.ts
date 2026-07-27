@@ -134,18 +134,23 @@ function validateNegativeIncident(facts: Record<string, unknown>): void {
   rejectExtraProperties(facts, INCIDENT_FIELDS, 'negative_incident');
 }
 
+const MAX_DATA_BYTES = 4096;
+
 function validateBehavioralV1(facts: Record<string, unknown>): void {
   if (Object.keys(facts).length === 0) {
     throw new SchemaValidationError('behavioral@1: facts must contain at least one key');
   }
   requireString(facts, 'observation_ts', 'behavioral');
-  // behavioral@1 allows a bounded nested "data" object (max 4KB, depth 4)
-  // plus primitive top-level fields. No additionalProperties restriction
-  // on behavioral since issuer-defined data is freeform per spec §6.4.
   for (const [key, value] of Object.entries(facts)) {
     if (key === 'observation_ts') continue;
     if (key === 'data' && value && typeof value === 'object' && !Array.isArray(value)) {
-      // Nested data object — size/depth already checked by checkSizeAndDepth
+      const dataJson = JSON.stringify(value);
+      const dataBytes = Buffer.byteLength(dataJson, 'utf8');
+      if (dataBytes > MAX_DATA_BYTES) {
+        throw new SchemaValidationError(
+          `behavioral@1.data exceeds ${MAX_DATA_BYTES} byte limit (${dataBytes} bytes)`,
+        );
+      }
       continue;
     }
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {

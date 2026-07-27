@@ -225,7 +225,7 @@ describe('verifyAttestation', () => {
     });
   });
 
-  test('vli without schema_version defaults to "1" (native)', async () => {
+  test('vli without schema_version preserves empty string (ingest resolves)', async () => {
     const { privateKey, publicKeyRaw } = makeKey();
     const token = signJws({
       privateKey,
@@ -240,10 +240,10 @@ describe('verifyAttestation', () => {
     const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
     const result = await verifyAttestation(token, candidates);
     assert.equal(result.valid, true);
-    assert.equal(result.payload?.schemaVersion, '1');
+    assert.equal(result.payload?.schemaVersion, '');
   });
 
-  test('legacy flattened (no vli) defaults schema_version to "0"', async () => {
+  test('legacy flattened (no vli) preserves empty string for ingest to resolve', async () => {
     const { privateKey, publicKeyRaw } = makeKey();
     const token = signJws({
       privateKey,
@@ -260,7 +260,7 @@ describe('verifyAttestation', () => {
     const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
     const result = await verifyAttestation(token, candidates);
     assert.equal(result.valid, true);
-    assert.equal(result.payload?.schemaVersion, '0');
+    assert.equal(result.payload?.schemaVersion, '');
   });
 });
 

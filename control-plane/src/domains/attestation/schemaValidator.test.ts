@@ -26,6 +26,22 @@ describe('validateSchema — behavioral', () => {
     assert.doesNotThrow(() => validateSchema('behavioral', '0', {}, 'vrl:p:test-issuer'));
   });
 
+  it('behavioral@1 accepts data object under 4KB', () => {
+    const data: Record<string, string> = {};
+    for (let i = 0; i < 100; i++) data[`k${i}`] = 'x'.repeat(10);
+    assert.doesNotThrow(() =>
+      validateSchema('behavioral', '1', { observation_ts: '2024-01-01', data }),
+    );
+  });
+
+  it('behavioral@1 rejects data object over 4KB', () => {
+    const data = { big: 'x'.repeat(5000) };
+    assert.throws(
+      () => validateSchema('behavioral', '1', { observation_ts: '2024-01-01', data }),
+      SchemaValidationError,
+    );
+  });
+
   it('behavioral@1 accepts valid facts with data object', () => {
     assert.doesNotThrow(() =>
       validateSchema('behavioral', '1', { observation_ts: '2024-01-01T00:00:00Z', action: 'commit', data: { nested: 'value' } }),

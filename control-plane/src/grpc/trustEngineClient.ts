@@ -77,12 +77,11 @@ function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
     ? jwsPayload.vli as Record<string, unknown>
     : jwsPayload;
 
-  // schema_version: native v1 must be explicit. Legacy tokens (no vli or
-  // vli without schema_version) default to "0" for allowlisted compatibility.
+  // schema_version: preserve absent version as empty string. Ingest
+  // decides: allowlisted legacy issuer → "0", native issuer → reject
+  // (v1 requires explicit schema_version).
   const explicitVersion = vli.schema_version ?? vli.schemaVersion;
-  const schemaVersion = explicitVersion != null
-    ? String(explicitVersion)
-    : (hasVli ? '1' : '0');
+  const schemaVersion = explicitVersion != null ? String(explicitVersion) : '';
 
   return {
     attestationType: String(vli.type ?? vli.attestation_type ?? ''),

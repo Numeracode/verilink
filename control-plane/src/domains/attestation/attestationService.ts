@@ -4,40 +4,10 @@ import * as attestationRepo from './attestationRepository.js';
 import * as principalRepo from '../principal/principalRepository.js';
 import { preParseJWS } from './jws.js';
 import { validateSchema, SchemaValidationError, SchemaValidationExpiredError } from './schemaValidator.js';
+import { canonicalize, computeFactsHash } from './canonicalize.js';
 import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClient.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
-
-// RFC 8785 JSON Canonicalization Scheme (JCS)
-// Sorts object properties by UTF-16 code unit order (not locale-dependent).
-function canonicalize(obj: unknown): string {
-  return JSON.stringify(canonicalizeValue(obj));
-}
-
-function canonicalizeValue(value: unknown): unknown {
-  if (value === null) return null;
-  if (Array.isArray(value)) return value.map(canonicalizeValue);
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => {
-        // RFC 8785: compare by UTF-16 code unit sequence
-        const aLen = a.length, bLen = b.length;
-        const minLen = Math.min(aLen, bLen);
-        for (let i = 0; i < minLen; i++) {
-          if (a.charCodeAt(i) !== b.charCodeAt(i)) {
-            return a.charCodeAt(i) - b.charCodeAt(i);
-          }
-        }
-        return aLen - bLen;
-      });
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of entries) {
-      if (v !== undefined) result[k] = canonicalizeValue(v);
-    }
-    return result;
-  }
-  return value;
-}
 
 function sha256hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -109,9 +79,21 @@ export async function submitAttestation(opts: {
   const verifiedIssuerId = verifyResult.issuerId!;
   const verifiedSubjectId = verifyResult.subjectId!;
 
-  // 5. Schema validation
+  // 5. Schema validation — resolve schema_version
+  let schemaVersion = vp.schemaVersion;
+  if (!schemaVersion) {
+    // Version absent: only allowlisted legacy issuers get v0 default
+    const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (allowlist.includes(verifiedIssuerId)) {
+      schemaVersion = '0';
+    } else {
+      throw new AppError(CODES.BAD_REQUEST, 'schema_version is required for native issuers');
+    }
+  }
+
   try {
-    validateSchema(vp.attestationType, vp.schemaVersion, JSON.parse(vp.factsJson), verifiedIssuerId);
+    validateSchema(vp.attestationType, schemaVersion, JSON.parse(vp.factsJson), verifiedIssuerId);
   } catch (err: any) {
     if (err instanceof SchemaValidationExpiredError) {
       throw new AppError(CODES.UNPROCESSABLE, `schema validation failed: ${err.message}`);
@@ -139,7 +121,7 @@ export async function submitAttestation(opts: {
   // 8. Compute token_digest
   const tokenDigest = sha256hex(jwsToken);
   const facts = JSON.parse(vp.factsJson);
-  const factsHash = sha256hex(canonicalize(facts));
+  const factsHash = computeFactsHash(facts);
 
   // 9. Lazy subject creation (before transaction — idempotent)
   let subject = await principalRepo.getPrincipal(verifiedSubjectId);
@@ -188,7 +170,7 @@ export async function submitAttestation(opts: {
         visibility: vp.visibility || 'participants',
         trustDelta: vp.trustLevelDelta,
         attestationType: vp.attestationType,
-        schemaVersion: vp.schemaVersion || '0',
+        schemaVersion: schemaVersion,
         jti: vp.jti || undefined,
         observationId: vp.observationId || undefined,
         issuedAt: new Date(vp.issuedAtUnix * 1000),
