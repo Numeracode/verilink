@@ -1,4 +1,3 @@
-// control-plane/src/middleware/requireScope.ts
 import type { Request, Response, NextFunction } from 'express';
 import { AppError, CODES } from '../shared/errors/AppError.js';
 
@@ -13,15 +12,24 @@ export function requireScope(scope: string) {
       if (!scopes.includes(scope) && !scopes.includes('*')) {
         return next(new AppError(CODES.FORBIDDEN, `Missing required scope: ${scope}`));
       }
+      return next();
     }
 
-    // OIDC users: check role-based access (staff/admin have all scopes)
-    if (req.user.type === 'oidc') {
-      const role = req.user.role || 'member';
-      if (role !== 'staff' && role !== 'admin') {
-        // Members need explicit role mapping; for v1, deny by default
-        return next(new AppError(CODES.FORBIDDEN, `Role '${role}' does not have scope: ${scope}`));
-      }
+    // OIDC users: platform staff/admin bypass all scope checks
+    if (req.user.isStaff) {
+      return next();
+    }
+
+    // Tenant-scoped roles: check if ANY membership has a role that
+    // grants the scope. Tenant admin/staff can read/write attestations
+    // within their tenant; members are denied by default.
+    const roles = req.user.roles || [];
+    const hasElevatedRole = roles.some(
+      (r) => r === 'staff' || r === 'admin'
+    );
+
+    if (!hasElevatedRole) {
+      return next(new AppError(CODES.FORBIDDEN, `No membership grants scope: ${scope}`));
     }
 
     next();

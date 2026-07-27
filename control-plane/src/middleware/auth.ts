@@ -115,11 +115,12 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     `INSERT INTO users (email, oidc_issuer, oidc_subject)
      VALUES ($1, $2, $3)
      ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET email = EXCLUDED.email
-     RETURNING id`,
+     RETURNING id, platform_role`,
     [payload.email || `${oidcSubject}@placeholder`, oidcIssuer, oidcSubject]
   );
 
   const userId = rows[0].id;
+  const platformRole = rows[0].platform_role || 'member';
 
   // Get all tenant memberships (user may belong to multiple tenants)
   const { rows: memberships } = await pool.query(
@@ -134,7 +135,7 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     role: memberships[0]?.role || 'member',
     tenantIds: memberships.map((m: { tenant_id: string }) => m.tenant_id),
     roles: memberships.map((m: { role: string }) => m.role),
-    isStaff: memberships.some((m: { role: string }) => m.role === 'staff' || m.role === 'admin'),
+    isStaff: platformRole === 'staff' || platformRole === 'admin',
   };
 
   next();
