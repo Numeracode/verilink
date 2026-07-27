@@ -1,6 +1,7 @@
 // control-plane/src/middleware/audit.ts
 import type { Request, Response, NextFunction } from 'express';
 import { pool } from '../db/client.js';
+import { logger } from '../shared/logger.js';
 
 export async function auditLog(
   userId: string | undefined,
@@ -31,7 +32,7 @@ export async function auditLog(
     );
   } catch (err) {
     // Audit failure never blocks the main request
-    console.error({ err }, 'Audit log write failed');
+    logger.error({ err }, 'Audit log write failed');
   }
 }
 

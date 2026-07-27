@@ -1,6 +1,7 @@
 // control-plane/src/db/client.ts
 import pg from 'pg';
 import { config } from '../config.js';
+import { logger } from '../shared/logger.js';
 
 export const pool = new pg.Pool({
   connectionString: config.database.url,
@@ -10,5 +11,5 @@ export const pool = new pg.Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected idle client error:', err);
+  logger.error({ err }, 'Unexpected idle client error');
 });

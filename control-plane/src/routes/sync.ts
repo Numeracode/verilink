@@ -3,6 +3,7 @@ import { ok } from '../shared/http/responses.js';
 import { defineHandler } from '../shared/http/defineHandler.js';
 import { apiKeyOnly } from '../middleware/auth.js';
 import * as syncService from '../domains/sync/syncService.js';
+import { AppError, CODES } from '../shared/errors/AppError.js';
 
 const router = Router();
 router.use(apiKeyOnly);
@@ -11,7 +12,7 @@ router.get('/snapshot', defineHandler({
   async handler(req, res) {
     const tenantId = req.user?.tenantId;
     if (!tenantId) {
-      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Tenant required' } });
+      throw new AppError(CODES.FORBIDDEN, 'Tenant required');
     }
     const snapshot = await syncService.getSnapshot(tenantId);
     ok(res, snapshot);
@@ -41,10 +42,11 @@ router.get('/events', defineHandler({
       res.write(`data: ${JSON.stringify(event.payload)}\n\n`);
     }
 
-    // Send cursor event for the high water mark
-    const hw = await syncService.getEventsSince(0); // get max version
-    // Actually, we need getHighWaterVersion
-    // For now, just end the stream
+    // Send high water mark as final event
+    const hwVersion = await syncService.getHighWaterVersion();
+    res.write(`id: ${hwVersion}\n`);
+    res.write(`event: cursor\n`);
+    res.write(`data: ${JSON.stringify({ sync_version: hwVersion })}\n\n`);
     res.end();
   },
 }));

@@ -33,7 +33,6 @@ CREATE TABLE attestations (
 CREATE INDEX idx_attestations_subject ON attestations (subject_id);
 CREATE INDEX idx_attestations_issuer ON attestations (issuer_id);
 CREATE INDEX idx_attestations_issued_at ON attestations (issued_at);
-CREATE INDEX idx_attestations_token_digest ON attestations (token_digest);
 
 -- Network scores: materialized VeriRank output (global)
 CREATE TABLE network_scores (

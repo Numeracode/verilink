@@ -59,6 +59,11 @@ export async function createAttestation(att: {
   return rows[0];
 }
 
+export async function findById(id: string): Promise<Attestation | null> {
+  const { rows } = await pool.query('SELECT * FROM attestations WHERE id = $1', [id]);
+  return rows[0] || null;
+}
+
 export async function findByTokenDigest(digest: string): Promise<Attestation | null> {
   const { rows } = await pool.query(
     'SELECT * FROM attestations WHERE token_digest = $1',

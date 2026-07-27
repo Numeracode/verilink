@@ -29,8 +29,9 @@ CREATE TABLE decision_aggregates (
   dimension_kind  TEXT NOT NULL CHECK (dimension_kind IN ('all', 'principal', 'fingerprint')),
   dimension_value TEXT NOT NULL,                    -- '' for 'all'; the principal_id or fingerprint otherwise
   action          TEXT NOT NULL CHECK (action IN ('allow', 'deny', 'passthrough')),
-  count           INTEGER NOT NULL,
-  UNIQUE (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action)
+  count           INTEGER NOT NULL CHECK (count >= 0),
+  UNIQUE (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action),
+  FOREIGN KEY (tenant_id, edge_node_id) REFERENCES edge_nodes(tenant_id, id)
 );
 
 -- Decision samples: all denies + tunable % of allows/passthroughs
@@ -44,8 +45,9 @@ CREATE TABLE decision_samples (
   score           INTEGER,
   blacklisted     BOOLEAN,
   score_reason    TEXT,
-  action          TEXT NOT NULL,
+  action          TEXT NOT NULL CHECK (action IN ('allow', 'deny', 'passthrough')),
   decided_at      TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (tenant_id, edge_node_id) REFERENCES edge_nodes(tenant_id, id),
   received_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (edge_node_id, wal_seq)
 );
@@ -60,7 +62,8 @@ CREATE TABLE decision_batches (
   payload_hash    TEXT NOT NULL,                    -- sha256(batch payload)
   received_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (edge_node_id, batch_id),
-  CHECK (first_wal_seq <= last_wal_seq)
+  CHECK (first_wal_seq <= last_wal_seq),
+  FOREIGN KEY (tenant_id, edge_node_id) REFERENCES edge_nodes(tenant_id, id)
 );
 
 -- Audit log: administrative/state-change events only (low volume)

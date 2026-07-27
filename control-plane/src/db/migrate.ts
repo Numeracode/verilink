@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { pool } from './client.js';
+import { logger } from '../shared/logger.js';
 
 const MIGRATIONS_DIR = join(import.meta.dirname, '../../migrations');
 const LOCK_ID = 8392017; // different from Whimsy's 7745836
@@ -46,10 +47,7 @@ export async function runMigrations(): Promise<void> {
   try {
     // Acquire advisory lock (blocks concurrent migration runs)
     await client.query('SET lock_timeout = \'30s\'');
-    const locked = await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]);
-    if (!locked.rows[0].pg_advisory_lock) {
-      throw new Error('Could not acquire advisory lock for migrations');
-    }
+    await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]);
 
     // Create tracking table if not exists
     await client.query(`
@@ -66,6 +64,15 @@ export async function runMigrations(): Promise<void> {
     );
     const appliedMap = new Map(applied.map((r) => [r.name, r.checksum]));
 
+    // Drift detection: applied migrations that no longer have files
+    for (const name of appliedMap.keys()) {
+      if (!migrations.find((m) => m.name === name)) {
+        throw new Error(
+          `Migration ${name} was applied but no migration file found — possible drift`
+        );
+      }
+    }
+
     for (const migration of migrations) {
       if (appliedMap.has(migration.name)) {
         // Verify checksum hasn't changed
@@ -79,7 +86,7 @@ export async function runMigrations(): Promise<void> {
         continue; // already applied
       }
 
-      console.log(`Applying migration: ${migration.name}`);
+      logger.info(`Applying migration: ${migration.name}`);
       await client.query('BEGIN');
       try {
         await client.query(migration.sql);
@@ -88,14 +95,14 @@ export async function runMigrations(): Promise<void> {
           [migration.name, migration.checksum]
         );
         await client.query('COMMIT');
-        console.log(`Applied: ${migration.name}`);
+        logger.info(`Applied: ${migration.name}`);
       } catch (err) {
         await client.query('ROLLBACK');
         throw new Error(`Migration ${migration.name} failed: ${err}`);
       }
     }
 
-    console.log(`All ${migrations.length} migrations applied.`);
+    logger.info(`All ${migrations.length} migrations applied.`);
   } finally {
     // Release advisory lock
     await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);
@@ -110,7 +117,7 @@ if (process.argv[1] && process.argv[1].endsWith('migrate.ts')) {
   runMigrations()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error(err);
+      logger.error(err);
       process.exit(1);
     });
 }

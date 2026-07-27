@@ -7,7 +7,16 @@ import { withTransaction } from '../../db/transaction.js';
 
 // Canonical JSON serialization (RFC 8785 JCS - simplified for v1)
 function canonicalize(obj: unknown): string {
-  return JSON.stringify(obj, Object.keys(obj as Record<string, unknown>).sort());
+  function sortKeys(o: unknown): unknown {
+    if (Array.isArray(o)) return o.map(sortKeys);
+    if (o && typeof o === 'object' && !(o instanceof Date)) {
+      return Object.fromEntries(
+        Object.entries(o).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sortKeys(v)])
+      );
+    }
+    return o;
+  }
+  return JSON.stringify(sortKeys(obj));
 }
 
 function sha256hex(input: string): string {
@@ -34,13 +43,6 @@ export async function submitAttestation(opts: {
   };
 }): Promise<attestationRepo.Attestation> {
   const { jwsToken, verified } = opts;
-
-  // Dedup check
-  const tokenDigest = sha256hex(jwsToken);
-  const existing = await attestationRepo.findByTokenDigest(tokenDigest);
-  if (existing) {
-    throw new AppError(CODES.CONFLICT, 'Attestation already submitted (duplicate token)');
-  }
 
   // Validate trust_delta range
   if (verified.payload.trustLevelDelta < -100 || verified.payload.trustLevelDelta > 100) {
@@ -72,37 +74,45 @@ export async function submitAttestation(opts: {
   }
 
   // Compute facts_hash
+  const tokenDigest = sha256hex(jwsToken);
   const factsHash = sha256hex(canonicalize(verified.payload.facts));
 
-  return withTransaction(async (_client) => {
-    const att = await attestationRepo.createAttestation({
-      issuerId: verified.issuerId,
-      subjectId: verified.subjectId,
-      jwsToken,
-      tokenDigest,
-      payload: verified.payload as unknown as Record<string, unknown>,
-      facts: verified.payload.facts,
-      factsHash,
-      visibility: verified.payload.visibility || 'participants',
-      trustDelta: verified.payload.trustLevelDelta,
-      attestationType: verified.payload.type,
-      schemaVersion: verified.payload.schemaVersion || '0',
-      jti: verified.payload.jti,
-      observationId: verified.payload.observationId,
-      issuedAt: verified.payload.issuedAt,
-      expiresAt: verified.payload.expiresAt,
-      verifiedKeyId: verified.keyId,
+  try {
+    return await withTransaction(async (_client) => {
+      const att = await attestationRepo.createAttestation({
+        issuerId: verified.issuerId,
+        subjectId: verified.subjectId,
+        jwsToken,
+        tokenDigest,
+        payload: verified.payload as unknown as Record<string, unknown>,
+        facts: verified.payload.facts,
+        factsHash,
+        visibility: verified.payload.visibility || 'participants',
+        trustDelta: verified.payload.trustLevelDelta,
+        attestationType: verified.payload.type,
+        schemaVersion: verified.payload.schemaVersion || '0',
+        jti: verified.payload.jti,
+        observationId: verified.payload.observationId,
+        issuedAt: verified.payload.issuedAt,
+        expiresAt: verified.payload.expiresAt,
+        verifiedKeyId: verified.keyId,
+      });
+
+      // TODO: Enqueue RunVeriRank job (debounced, per spec 4.5)
+      // For v1, score computation is triggered explicitly via POST /v1/scores/recompute
+
+      return att;
     });
-
-    // TODO: Enqueue RunVeriRank job (debounced, per spec 4.5)
-    // For v1, score computation is triggered explicitly via POST /v1/scores/recompute
-
-    return att;
-  });
+  } catch (err: any) {
+    if (err.code === '23505') {
+      throw new AppError(CODES.CONFLICT, 'Attestation already submitted (duplicate token)');
+    }
+    throw err;
+  }
 }
 
 export async function getAttestation(id: string): Promise<attestationRepo.Attestation> {
-  const att = await attestationRepo.findByTokenDigest(id); // or by UUID
+  const att = await attestationRepo.findById(id);
   if (!att) throw new AppError(CODES.NOT_FOUND, `Attestation ${id} not found`);
   return att;
 }

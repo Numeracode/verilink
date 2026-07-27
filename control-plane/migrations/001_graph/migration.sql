@@ -38,7 +38,7 @@ CREATE UNIQUE INDEX key_hash_unique ON principal_keys (key_hash);
 -- Issuer attributes (a principal that can sign attestations)
 CREATE TABLE issuers (
   principal_id    TEXT PRIMARY KEY REFERENCES principals(id),
-  trust_weight    NUMERIC(3,2) DEFAULT 1.0,         -- issuer-quality knob; NOT touched by bootstrap de-emphasis
+  trust_weight    NUMERIC(3,2) NOT NULL DEFAULT 1.0 CHECK (trust_weight >= 0), -- issuer-quality knob; NOT touched by bootstrap de-emphasis
   is_bootstrap    BOOLEAN DEFAULT false,            -- derived from bootstrap_issuers by the seeder
   verified_at     TIMESTAMPTZ,                      -- set after proof of key control + review
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -112,12 +112,34 @@ export async function getKeyByHash(keyHash: string): Promise<PrincipalKey | null
 
 export async function createIssuer(
   principalId: string,
-  trustWeight: number = 1.0
+  trustWeight?: number
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO issuers (principal_id, trust_weight)
-     VALUES ($1, $2)
-     ON CONFLICT (principal_id) DO UPDATE SET trust_weight = EXCLUDED.trust_weight`,
-    [principalId, trustWeight]
-  );
+  if (trustWeight !== undefined) {
+    await pool.query(
+      `INSERT INTO issuers (principal_id, trust_weight)
+       VALUES ($1, $2)
+       ON CONFLICT (principal_id) DO UPDATE SET trust_weight = EXCLUDED.trust_weight`,
+      [principalId, trustWeight]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO issuers (principal_id)
+       VALUES ($1)
+       ON CONFLICT (principal_id) DO NOTHING`,
+      [principalId]
+    );
+  }
+}
+
+export async function updatePrincipal(id: string, fields: { entity_kind?: string }): Promise<void> {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+  if (fields.entity_kind) {
+    sets.push(`entity_kind = $${idx++}`);
+    params.push(fields.entity_kind);
+  }
+  if (sets.length === 0) return;
+  params.push(id);
+  await pool.query(`UPDATE principals SET ${sets.join(', ')} WHERE id = $${idx}`, params);
 }

@@ -1,5 +1,7 @@
 -- control-plane/migrations/004_tenancy/migration.sql
 
+CREATE EXTENSION IF NOT EXISTS citext;
+
 -- Tenants
 CREATE TABLE tenants (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),

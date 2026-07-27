@@ -46,9 +46,9 @@ export class AppError extends Error {
   static from(err: unknown): AppError {
     if (err instanceof AppError) return err;
     if (err instanceof Error) {
-      return new AppError(CODES.INTERNAL, err.message, { cause: err });
+      return new AppError(CODES.INTERNAL, 'Internal server error', { cause: err });
     }
-    return new AppError(CODES.INTERNAL, String(err));
+    return new AppError(CODES.INTERNAL, 'Internal server error');
   }
 
   toResponse() {

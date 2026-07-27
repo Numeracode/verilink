@@ -121,7 +121,7 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
 
   const userId = rows[0].id;
 
-  // Get tenant membership (for now, first tenant)
+  // Get tenant membership (v1 simplification: first matching tenant)
   const { rows: memberships } = await pool.query(
     `SELECT tenant_id, role FROM tenant_memberships WHERE user_id = $1 LIMIT 1`,
     [userId]
@@ -140,12 +140,16 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
 /**
  * Standalone API key middleware (no OIDC fallback).
  */
-export function apiKeyOnly(req: Request, res: Response, next: NextFunction) {
+export async function apiKeyOnly(req: Request, res: Response, next: NextFunction) {
   const apiKey = (req.headers['x-api-key'] as string) || extractBearerKey(req);
   if (!apiKey) {
     return next(new AppError(CODES.UNAUTHORIZED, 'API key required'));
   }
-  authenticateApiKey(apiKey, req, next);
+  try {
+    await authenticateApiKey(apiKey, req, next);
+  } catch (err) {
+    next(AppError.from(err));
+  }
 }
 
 function extractBearerKey(req: Request): string | null {

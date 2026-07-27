@@ -24,7 +24,20 @@ function validateParam(value: unknown, name: string, def: ParamDef): void {
     }
     return;
   }
-  if (def.enum && !def.enum.includes(String(value))) {
+  const str = String(value);
+  if (def.type === 'number') {
+    const n = Number(str);
+    if (Number.isNaN(n)) {
+      throw new AppError(CODES.BAD_REQUEST, `${name} must be a number`);
+    }
+    if (def.min !== undefined && n < def.min) {
+      throw new AppError(CODES.BAD_REQUEST, `${name} must be >= ${def.min}`);
+    }
+    if (def.max !== undefined && n > def.max) {
+      throw new AppError(CODES.BAD_REQUEST, `${name} must be <= ${def.max}`);
+    }
+  }
+  if (def.enum && !def.enum.includes(str)) {
     throw new AppError(CODES.BAD_REQUEST, `Invalid value for ${name}: ${value}`);
   }
 }

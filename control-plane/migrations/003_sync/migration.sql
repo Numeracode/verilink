@@ -18,7 +18,7 @@ CREATE INDEX idx_sync_events_tenant ON sync_events (tenant_id) WHERE tenant_id I
 CREATE TABLE bootstrap_issuers (
   principal_id    TEXT PRIMARY KEY REFERENCES issuers(principal_id),
   name            TEXT NOT NULL,
-  current_weight  NUMERIC(3,2) NOT NULL DEFAULT 1.0, -- written through to Root.weight
+  current_weight  NUMERIC(3,2) NOT NULL DEFAULT 1.0 CHECK (current_weight >= 0), -- written through to Root.weight
   seeded_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   de_emphasized_at TIMESTAMPTZ,
   de_emphasis_reason TEXT,

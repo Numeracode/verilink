@@ -1,5 +1,5 @@
 // control-plane/src/domains/sync/syncRepository.ts
-import { pool } from '../../db/transaction.js';
+import { pool, withTransaction } from '../../db/transaction.js';
 
 export interface SyncEvent {
   sync_version: number;
@@ -15,15 +15,22 @@ export async function appendEvent(
   payload: Record<string, unknown>,
   opts: { principalId?: string; tenantId?: string } = {}
 ): Promise<number> {
-  // Allocate sync_version via locked allocator
-  const { rows } = await pool.query(
-    `INSERT INTO sync_events (sync_version, event_type, principal_id, tenant_id, payload)
-     SELECT COALESCE(MAX(sync_version), 0) + 1, $1, $2, $3, $4
-     FROM sync_events
-     RETURNING sync_version`,
-    [eventType, opts.principalId || null, opts.tenantId || null, JSON.stringify(payload)]
-  );
-  return rows[0].sync_version;
+  return withTransaction(async (client) => {
+    await client.query("SET lock_timeout = '5s'");
+    await client.query('SELECT pg_advisory_lock(8392018)');
+    try {
+      const { rows } = await client.query(
+        `INSERT INTO sync_events (sync_version, event_type, principal_id, tenant_id, payload)
+         SELECT COALESCE(MAX(sync_version), 0) + 1, $1, $2, $3, $4
+         FROM sync_events
+         RETURNING sync_version`,
+        [eventType, opts.principalId || null, opts.tenantId || null, JSON.stringify(payload)]
+      );
+      return rows[0].sync_version;
+    } finally {
+      await client.query('SELECT pg_advisory_unlock(8392018)');
+    }
+  });
 }
 
 export async function getEventsSince(

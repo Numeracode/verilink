@@ -26,7 +26,7 @@ function requireEnv(name: string): string {
 
 export const config = Object.freeze({
   database: Object.freeze({
-    url: optional('DATABASE_URL', 'postgresql://verilink:verilink@localhost:5432/verilink'),
+    url: optional('DATABASE_URL'),
     poolMax: optionalInt('DB_POOL_MAX', 20),
     poolIdleTimeoutMillis: optionalInt('DB_POOL_IDLE_TIMEOUT_MS', 30000),
     poolConnectionTimeoutMillis: optionalInt('DB_POOL_CONNECT_TIMEOUT_MS', 5000),

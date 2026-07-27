@@ -1,6 +1,7 @@
 // control-plane/src/shared/http/responses.ts
 import type { Response } from 'express';
 import { AppError, CODES } from '../errors/AppError.js';
+import { logger } from '../logger.js';
 
 export function ok(res: Response, data: unknown) {
   return res.status(200).json({ ok: true, data });
@@ -31,6 +32,6 @@ export function paginated(
 
 export function error(res: Response, err: unknown) {
   const appErr = AppError.from(err);
-  console.error({ err: appErr, code: appErr.code }, appErr.message);
+  logger.error({ err: appErr, code: appErr.code }, appErr.message);
   return res.status(appErr.status).json(appErr.toResponse());
 }

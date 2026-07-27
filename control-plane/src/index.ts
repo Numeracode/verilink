@@ -20,7 +20,10 @@ async function main() {
   });
 
   // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('Shutting down...');
     server.close(async () => {
       await pool.end();

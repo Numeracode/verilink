@@ -65,3 +65,7 @@ export async function getSnapshot(tenantId: string): Promise<Snapshot> {
 export async function getEventsSince(sinceVersion: number, tenantId?: string) {
   return syncRepo.getEventsSince(sinceVersion, tenantId);
 }
+
+export async function getHighWaterVersion(): Promise<number> {
+  return syncRepo.getHighWaterVersion();
+}

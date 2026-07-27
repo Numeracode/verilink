@@ -12,8 +12,8 @@ CREATE TABLE policies (
   deny_fingerprints        TEXT[] DEFAULT '{}',
   fail_open_expired        BOOLEAN NOT NULL DEFAULT false,
   no_drop_decisions        BOOLEAN NOT NULL DEFAULT false,
-  max_snapshot_age_seconds INTEGER NOT NULL DEFAULT 300,
-  allow_sample_rate        NUMERIC(4,3) NOT NULL DEFAULT 0.010,
+  max_snapshot_age_seconds INTEGER NOT NULL DEFAULT 300 CHECK (max_snapshot_age_seconds >= 0),
+  allow_sample_rate        NUMERIC(4,3) NOT NULL DEFAULT 0.010 CHECK (allow_sample_rate >= 0 AND allow_sample_rate <= 1),
   is_active                BOOLEAN NOT NULL DEFAULT true,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (tenant_id, name)

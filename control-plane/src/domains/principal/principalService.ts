@@ -37,12 +37,14 @@ export async function addKey(
 ) {
   // Verify principal exists
   await getPrincipal(principalId);
-  // Check key_hash uniqueness
-  const existing = await principalRepo.getKeyByHash(keyHash);
-  if (existing) {
-    throw new AppError(CODES.CONFLICT, 'Key hash already registered to another principal');
+  try {
+    return await principalRepo.addKey(principalId, keyId, publicKeyRaw, publicKeyJwk, keyHash);
+  } catch (err: any) {
+    if (err.code === '23505') {
+      throw new AppError(CODES.CONFLICT, 'Key already registered (duplicate key_id or key_hash)');
+    }
+    throw err;
   }
-  return principalRepo.addKey(principalId, keyId, publicKeyRaw, publicKeyJwk, keyHash);
 }
 
 export async function listKeys(principalId: string) {
@@ -53,9 +55,7 @@ export async function listKeys(principalId: string) {
 export async function createIssuer(principalId: string, trustWeight?: number) {
   const p = await getPrincipal(principalId);
   if (p.entity_kind === 'agent') {
-    // Upgrade to 'both'
-    // (In v1, we just create the issuer record — entity_kind stays as-is
-    //  because the principal was created with the right kind by the caller)
+    await principalRepo.updatePrincipal(principalId, { entity_kind: 'both' });
   }
   return principalRepo.createIssuer(principalId, trustWeight);
 }
