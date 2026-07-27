@@ -1,5 +1,6 @@
 // control-plane/src/domains/attestation/attestationRepository.ts
 import { pool } from '../../db/transaction.js';
+import type { PoolClient } from 'pg';
 
 export interface Attestation {
   id: string;
@@ -40,22 +41,23 @@ export async function createAttestation(att: {
   issuedAt: Date;
   expiresAt?: Date;
   verifiedKeyId: string;
-}): Promise<Attestation> {
-  const { rows } = await pool.query(
-    `INSERT INTO attestations (
+}, client?: PoolClient): Promise<Attestation> {
+  const q = `INSERT INTO attestations (
       issuer_id, subject_id, jws_token, token_digest, payload, facts,
       facts_hash, visibility, trust_delta, attestation_type, schema_version,
       jti, observation_id, issued_at, expires_at, verified_key_id
     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-    RETURNING *`,
-    [
+    RETURNING *`;
+  const params = [
       att.issuerId, att.subjectId, att.jwsToken, att.tokenDigest,
       JSON.stringify(att.payload), JSON.stringify(att.facts),
       att.factsHash, att.visibility, att.trustDelta, att.attestationType,
       att.schemaVersion, att.jti || null, att.observationId || null,
       att.issuedAt, att.expiresAt || null, att.verifiedKeyId,
-    ]
-  );
+    ];
+  const { rows } = client
+    ? await client.query(q, params)
+    : await pool.query(q, params);
   return rows[0];
 }
 
@@ -64,25 +66,25 @@ export async function findById(id: string): Promise<Attestation | null> {
   return rows[0] || null;
 }
 
-export async function findByTokenDigest(digest: string): Promise<Attestation | null> {
-  const { rows } = await pool.query(
-    'SELECT * FROM attestations WHERE token_digest = $1',
-    [digest]
-  );
+export async function findByTokenDigest(digest: string, client?: PoolClient): Promise<Attestation | null> {
+  const q = 'SELECT * FROM attestations WHERE token_digest = $1';
+  const { rows } = client ? await client.query(q, [digest]) : await pool.query(q, [digest]);
   return rows[0] || null;
 }
 
 export async function findObservationPeer(
   issuerId: string,
   subjectId: string,
-  observationId: string
+  observationId: string,
+  client?: PoolClient,
 ): Promise<Attestation | null> {
-  const { rows } = await pool.query(
-    `SELECT * FROM attestations
+  const q = `SELECT * FROM attestations
      WHERE issuer_id = $1 AND subject_id = $2 AND observation_id = $3
-     LIMIT 1`,
-    [issuerId, subjectId, observationId]
-  );
+     FOR UPDATE
+     LIMIT 1`;
+  const { rows } = client
+    ? await client.query(q, [issuerId, subjectId, observationId])
+    : await pool.query(q, [issuerId, subjectId, observationId]);
   return rows[0] || null;
 }
 

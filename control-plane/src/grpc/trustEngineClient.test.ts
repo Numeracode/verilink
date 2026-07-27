@@ -173,6 +173,57 @@ describe('verifyAttestation', () => {
     assert.equal(result.valid, false);
     assert.match(result.error ?? '', /expired/);
   });
+
+  test('exp boundary: token at exact exp second is rejected', async () => {
+    const { privateKey, publicKeyRaw } = makeKey();
+    const now = Math.floor(Date.now() / 1000);
+    const token = signJws({
+      privateKey,
+      payload: { ...samplePayload, exp: now },
+    });
+    const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
+
+    const result = await verifyAttestation(token, candidates);
+
+    assert.equal(result.valid, false);
+    assert.match(result.error ?? '', /expired/);
+  });
+
+  test('parses vli nested claims (Go-compatible format)', async () => {
+    const { privateKey, publicKeyRaw } = makeKey();
+    const token = signJws({
+      privateKey,
+      payload: {
+        iss: 'vrl:p:00000000-0000-4000-8000-000000000001',
+        sub: 'vrl:p:00000000-0000-4000-8000-000000000002',
+        iat: 1700000000,
+        exp: 1900000000,
+        jti: 'att-vli-001',
+        vli: {
+          type: 'behavioral',
+          facts: { observation_ts: '2024-01-01T00:00:00Z', action: 'commit' },
+          trust_level_delta: 10,
+          schema_version: '1',
+          visibility: 'public',
+          observation_id: 'obs-123',
+        },
+      },
+    });
+    const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
+
+    const result = await verifyAttestation(token, candidates);
+
+    assert.equal(result.valid, true);
+    assert.equal(result.payload?.attestationType, 'behavioral');
+    assert.equal(result.payload?.trustLevelDelta, 10);
+    assert.equal(result.payload?.schemaVersion, '1');
+    assert.equal(result.payload?.visibility, 'public');
+    assert.equal(result.payload?.observationId, 'obs-123');
+    assert.deepEqual(JSON.parse(result.payload?.factsJson ?? '{}'), {
+      observation_ts: '2024-01-01T00:00:00Z',
+      action: 'commit',
+    });
+  });
 });
 
 function base64urlDecode(input: string): Buffer {

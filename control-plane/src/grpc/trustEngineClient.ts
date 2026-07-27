@@ -69,18 +69,25 @@ function ed25519PublicKey(raw: Buffer): crypto.KeyObject {
 }
 
 function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
+  // VeriLink attestations nest behavioral claims under "vli" (per
+  // pkg/attestation.AttestationClaims). Fall back to top-level for
+  // non-conformant legacy tokens.
+  const vli = (jwsPayload.vli && typeof jwsPayload.vli === 'object')
+    ? jwsPayload.vli as Record<string, unknown>
+    : jwsPayload;
+
   return {
-    attestationType: String(jwsPayload.attestation_type ?? jwsPayload.attestationType ?? ''),
-    factsJson: typeof jwsPayload.facts === 'string'
-      ? jwsPayload.facts
-      : JSON.stringify(jwsPayload.facts ?? {}),
-    trustLevelDelta: Number(jwsPayload.trust_level_delta ?? jwsPayload.trustLevelDelta ?? 0),
-    issuedAtUnix: Number(jwsPayload.iat ?? jwsPayload.issued_at_unix ?? 0),
-    expiresAtUnix: Number(jwsPayload.exp ?? jwsPayload.expires_at_unix ?? 0),
+    attestationType: String(vli.type ?? vli.attestation_type ?? ''),
+    factsJson: typeof vli.facts === 'string'
+      ? vli.facts
+      : JSON.stringify(vli.facts ?? {}),
+    trustLevelDelta: Number(vli.trust_level_delta ?? vli.trustLevelDelta ?? 0),
+    issuedAtUnix: Number(jwsPayload.iat ?? 0),
+    expiresAtUnix: Number(jwsPayload.exp ?? 0),
     jti: String(jwsPayload.jti ?? ''),
-    schemaVersion: String(jwsPayload.schema_version ?? jwsPayload.schemaVersion ?? '1'),
-    visibility: String(jwsPayload.visibility ?? 'participants'),
-    observationId: String(jwsPayload.observation_id ?? jwsPayload.observationId ?? ''),
+    schemaVersion: String(vli.schema_version ?? vli.schemaVersion ?? '1'),
+    visibility: String(vli.visibility ?? 'participants'),
+    observationId: String(vli.observation_id ?? vli.observationId ?? ''),
   };
 }
 
@@ -146,7 +153,7 @@ export async function verifyAttestation(
     // Expiration check: reject expired tokens
     if (result.payload!.expiresAtUnix > 0) {
       const now = Math.floor(Date.now() / 1000);
-      if (now > result.payload!.expiresAtUnix) {
+      if (now >= result.payload!.expiresAtUnix) {
         return { valid: false, error: `token expired at ${result.payload!.expiresAtUnix}` };
       }
     }

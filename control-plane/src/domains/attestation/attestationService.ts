@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import * as attestationRepo from './attestationRepository.js';
 import * as principalRepo from '../principal/principalRepository.js';
 import { preParseJWS } from './jws.js';
-import { validateSchema, SchemaValidationError } from './schemaValidator.js';
+import { validateSchema, SchemaValidationError, SchemaValidationExpiredError } from './schemaValidator.js';
 import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClient.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
@@ -95,6 +95,9 @@ export async function submitAttestation(opts: {
   try {
     validateSchema(vp.attestationType, vp.schemaVersion, JSON.parse(vp.factsJson), verifiedIssuerId);
   } catch (err: any) {
+    if (err instanceof SchemaValidationExpiredError) {
+      throw new AppError(CODES.UNPROCESSABLE, `schema validation failed: ${err.message}`);
+    }
     if (err instanceof SchemaValidationError) {
       throw new AppError(CODES.BAD_REQUEST, `schema validation failed: ${err.message}`);
     }
@@ -115,45 +118,47 @@ export async function submitAttestation(opts: {
     throw new AppError(CODES.BAD_REQUEST, 'non-negative_incident must have non-negative trust_delta');
   }
 
-  // 8. Dedup on token_digest
+  // 8. Compute token_digest
   const tokenDigest = sha256hex(jwsToken);
-  const existing = await attestationRepo.findByTokenDigest(tokenDigest);
-  if (existing) {
-    throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
-  }
+  const facts = JSON.parse(vp.factsJson);
+  const factsHash = sha256hex(canonicalize(facts));
 
-  // 8b. observation_id pairing invariants
-  if (vp.observationId) {
-    const peer = await attestationRepo.findObservationPeer(verifiedIssuerId, verifiedSubjectId, vp.observationId);
-    if (peer) {
-      if (peer.attestation_type !== vp.attestationType) {
-        throw new AppError(
-          CODES.BAD_REQUEST,
-          `observation_id pairing mismatch: attestation_type ${vp.attestationType} conflicts with existing ${peer.attestation_type}`
-        );
-      }
-      if (peer.trust_delta !== vp.trustLevelDelta) {
-        throw new AppError(
-          CODES.BAD_REQUEST,
-          `observation_id pairing mismatch: trust_delta ${vp.trustLevelDelta} conflicts with existing ${peer.trust_delta}`
-        );
-      }
-    }
-  }
-
-  // 9. Lazy subject creation
+  // 9. Lazy subject creation (before transaction — idempotent)
   let subject = await principalRepo.getPrincipal(verifiedSubjectId);
   if (!subject) {
     await principalRepo.createPrincipal(verifiedSubjectId, 'agent');
   }
 
-  // 10. Compute facts_hash
-  const facts = JSON.parse(vp.factsJson);
-  const factsHash = sha256hex(canonicalize(facts));
-
-  // 11. Store attestation transactionally
+  // 10. Store attestation transactionally with concurrency-safe dedup + observation_id pairing
   try {
-    return await withTransaction(async (_client) => {
+    return await withTransaction(async (client) => {
+      // Dedup check inside transaction with lock
+      const existing = await attestationRepo.findByTokenDigest(tokenDigest, client);
+      if (existing) {
+        throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
+      }
+
+      // observation_id pairing invariants (with row-level lock on peer)
+      if (vp.observationId) {
+        const peer = await attestationRepo.findObservationPeer(
+          verifiedIssuerId, verifiedSubjectId, vp.observationId, client
+        );
+        if (peer) {
+          if (peer.attestation_type !== vp.attestationType) {
+            throw new AppError(
+              CODES.BAD_REQUEST,
+              `observation_id pairing mismatch: attestation_type ${vp.attestationType} conflicts with existing ${peer.attestation_type}`
+            );
+          }
+          if (peer.trust_delta !== vp.trustLevelDelta) {
+            throw new AppError(
+              CODES.BAD_REQUEST,
+              `observation_id pairing mismatch: trust_delta ${vp.trustLevelDelta} conflicts with existing ${peer.trust_delta}`
+            );
+          }
+        }
+      }
+
       return await attestationRepo.createAttestation({
         issuerId: verifiedIssuerId,
         subjectId: verifiedSubjectId,
@@ -171,9 +176,10 @@ export async function submitAttestation(opts: {
         issuedAt: new Date(vp.issuedAtUnix * 1000),
         expiresAt: vp.expiresAtUnix > 0 ? new Date(vp.expiresAtUnix * 1000) : undefined,
         verifiedKeyId: verifyResult.verifiedKeyId!,
-      });
+      }, client);
     });
   } catch (err: any) {
+    if (err instanceof AppError) throw err;
     if (err.code === '23505') {
       throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
     }
