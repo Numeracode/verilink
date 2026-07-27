@@ -10,28 +10,28 @@ import (
 
 func TestAgentRegistry_RegisterAndLookup(t *testing.T) {
 	tests := []struct {
-		name   string
-		entry  *AgentEntry
-		keyID  string
+		name  string
+		entry *AgentEntry
+		keyID string
 	}{
 		{
 			name: "single agent",
 			entry: &AgentEntry{
-				DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-				KeyLabel:    "signing-key-1",
+				DID:          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+				KeyLabel:     "signing-key-1",
 				PublicKeyB64: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
 			},
-			keyID: "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:signing-key-1",
+			keyID: "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK|signing-key-1",
 		},
 		{
 			name: "agent with allowed URIs",
 			entry: &AgentEntry{
-				DID:         "did:web:example.com",
-				KeyLabel:    "prod-key",
+				DID:          "did:web:example.com",
+				KeyLabel:     "prod-key",
 				PublicKeyB64: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
-				AllowedURIs: []string{"/api/v1/*", "/health"},
+				AllowedURIs:  []string{"/api/v1/*", "/health"},
 			},
-			keyID: "vrl:agent:did:web:example.com:prod-key",
+			keyID: "vrl:agent:did:web:example.com|prod-key",
 		},
 	}
 
@@ -65,9 +65,9 @@ func TestAgentRegistry_LookupNotFound(t *testing.T) {
 		name  string
 		keyID string
 	}{
-		{"empty registry", "vrl:agent:did:key:z123:missing"},
-		{"wrong DID", "vrl:agent:did:web:unknown.com:key"},
-		{"wrong label", "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:nonexistent"},
+		{"empty registry", "vrl:agent:did:key:z123|missing"},
+		{"wrong DID", "vrl:agent:did:web:unknown.com|key"},
+		{"wrong label", "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK|nonexistent"},
 	}
 
 	for _, tt := range tests {
@@ -119,8 +119,8 @@ func TestAgentRegistry_GetPublicKey(t *testing.T) {
 	}
 
 	entry := &AgentEntry{
-		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-		KeyLabel:    "test-key",
+		DID:          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		KeyLabel:     "test-key",
 		PublicKeyB64: base64.RawURLEncoding.EncodeToString(pubKey),
 	}
 
@@ -129,7 +129,7 @@ func TestAgentRegistry_GetPublicKey(t *testing.T) {
 		t.Fatalf("Register failed: %v", err)
 	}
 
-	keyID := "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:test-key"
+	keyID := "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK|test-key"
 	got, err := r.GetPublicKey(keyID)
 	if err != nil {
 		t.Fatalf("GetPublicKey failed: %v", err)
@@ -159,8 +159,8 @@ func TestAgentRegistry_GetPublicKeyInvalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			entry := &AgentEntry{
-				DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-				KeyLabel:    "bad-key",
+				DID:          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+				KeyLabel:     "bad-key",
 				PublicKeyB64: tt.publicKeyB64,
 			}
 
@@ -169,7 +169,7 @@ func TestAgentRegistry_GetPublicKeyInvalid(t *testing.T) {
 				t.Fatalf("Register failed: %v", err)
 			}
 
-			keyID := "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:bad-key"
+			keyID := "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK|bad-key"
 			_, err := r.GetPublicKey(keyID)
 			if err == nil {
 				t.Errorf("expected error for %s, got nil", tt.name)
@@ -212,7 +212,7 @@ func TestAgentRegistry_SaveAndLoadJSON(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		keyID := "vrl:agent:" + e.DID + ":" + e.KeyLabel
+		keyID := "vrl:agent:" + e.DID + "|" + e.KeyLabel
 		got, err := loaded.Lookup(keyID)
 		if err != nil {
 			t.Errorf("Lookup(%q) after load failed: %v", keyID, err)
@@ -235,13 +235,13 @@ func TestAgentRegistry_KeyIDFormat(t *testing.T) {
 		wantLbl string
 		wantOK  bool
 	}{
-		{"valid format", "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:signing-key-1", "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "signing-key-1", true},
-		{"web DID", "vrl:agent:did:web:example.com:prod-key", "did:web:example.com", "prod-key", true},
-		{"missing prefix", "agent:did:key:z123:key", "", "", false},
-		{"empty DID", "vrl:agent::key", "", "", false},
-		{"empty label", "vrl:agent:did:key:z123:", "", "", false},
-		{"no label", "vrl:agent:did:key:z123", "", "", false},
-		{"extra colons", "vrl:agent:did:key:z123:a:b", "did:key:z123", "a:b", true},
+		{"valid format", "vrl:agent:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK|signing-key-1", "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "signing-key-1", true},
+		{"web DID", "vrl:agent:did:web:example.com|prod-key", "did:web:example.com", "prod-key", true},
+		{"label with colons", "vrl:agent:did:key:z123|a:b:c", "did:key:z123", "a:b:c", true},
+		{"missing prefix", "agent:did:key:z123|key", "", "", false},
+		{"empty DID", "vrl:agent:|key", "", "", false},
+		{"empty label", "vrl:agent:did:key:z123|", "", "", false},
+		{"no separator", "vrl:agent:did:key:z123", "", "", false},
 	}
 
 	for _, tt := range tests {

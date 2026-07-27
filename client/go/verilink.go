@@ -176,18 +176,30 @@ func (c *Client) IsTrusted(ctx context.Context, fingerprint string, threshold in
 // It adds Signature-Input and Signature headers to the request.
 // keyLabel is used to construct the keyid (e.g., "default" → "vrl:agent:<did>:default").
 func (c *Client) SignRequest(req *http.Request, keyLabel string) error {
-	body, _ := io.ReadAll(req.Body)
-	req.Body = io.NopCloser(bytes.NewReader(body))
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("verilink: read request body: %w", err)
+		}
+		req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
 
 	targetURI := req.URL.String()
-	if !strings.HasPrefix(targetURI, "http") {
-		targetURI = "https://" + req.Host + req.URL.String()
+	if !req.URL.IsAbs() {
+		scheme := "https"
+		if req.URL.Scheme != "" {
+			scheme = req.URL.Scheme
+		}
+		targetURI = scheme + "://" + req.Host + req.URL.RequestURI()
 	}
 
 	created := time.Now().Unix()
 	expires := created + 300 // 5 min
 
-	keyID := fmt.Sprintf("vrl:agent:%s:%s", c.cfg.IssuerDID, keyLabel)
+	keyID := fmt.Sprintf("vrl:agent:%s|%s", c.cfg.IssuerDID, keyLabel)
 	sigInput, sig, err := requestsigin.Sign(req.Method, targetURI, created, expires, body, keyID, c.cfg.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("verilink: sign request: %w", err)
@@ -211,8 +223,10 @@ func (c *Client) MakeRequest(ctx context.Context, method, path string, body []by
 		return nil, fmt.Errorf("verilink: build request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	if keyLabel != "" {
 		if err := c.SignRequest(req, keyLabel); err != nil {

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"bytes"
+	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"io"
@@ -18,14 +18,16 @@ import (
 	"github.com/messagesgoel-blip/verilink/pkg/verifier"
 )
 
+const maxSignedBodyBytes int64 = 1 << 20 // 1 MiB
+
 // EdgeVerifierProxy is the main proxy with RFC 9421 signature verification.
 type EdgeVerifierProxy struct {
-	proxy           *httputil.ReverseProxy
-	trustStore      verifier.TrustStore
-	registry        *requestsigin.AgentRegistry
-	nonceCache      *requestsigin.NonceCache
+	proxy             *httputil.ReverseProxy
+	trustStore        verifier.TrustStore
+	registry          *requestsigin.AgentRegistry
+	nonceCache        *requestsigin.NonceCache
 	requireSignatures bool
-	externalBaseURL string
+	externalBaseURL   string
 }
 
 // NewEdgeVerifierProxy creates the proxy.
@@ -52,11 +54,27 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if sigInputHeader != "" {
 		sigHeader := r.Header.Get("Signature")
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
+		r.Body = http.MaxBytesReader(w, r.Body, maxSignedBodyBytes)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("BODY_READ_ERROR: method=%s uri=%s reason=%v", r.Method, r.URL, err)
+			w.Header().Set("X-Verilink-Auth-Status", "invalid-signature")
+			http.Error(w, "Bad Request: unreadable body", http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
-		err := requestsigin.VerifySignatureInput(
+		// Parse the signature input to get keyid and nonce for nonce cache
+		si, parseErr := requestsigin.ParseSignatureInput(sigInputHeader)
+		if parseErr != nil {
+			log.Printf("INVALID_SIG: method=%s uri=%s reason=%v", r.Method, r.URL, parseErr)
+			w.Header().Set("X-Verilink-Auth-Status", "invalid-signature")
+			http.Error(w, "Unauthorized: Invalid HTTP Message Signature", http.StatusUnauthorized)
+			return
+		}
+
+		err = requestsigin.VerifySignatureInput(
 			sigInputHeader,
 			sigHeader,
 			r.Method,
@@ -74,7 +92,32 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Nonce replay check
+		if si.Nonce != "" {
+			if !p.nonceCache.CheckAndConsume(si.Nonce, si.KeyID) {
+				log.Printf("REPLAY: method=%s uri=%s keyid=%s nonce=%s", r.Method, r.URL, si.KeyID, si.Nonce)
+				w.Header().Set("X-Verilink-Auth-Status", "replay-detected")
+				http.Error(w, "Unauthorized: Replay detected", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		// Consult trust store for signed requests and propagate score
+		if p.trustStore != nil {
+			fpData := fingerprint.RequestData{
+				JA4:      r.Header.Get("X-JA4-Fingerprint"),
+				Protocol: r.Proto,
+				Headers:  map[string]string{"User-Agent": r.UserAgent()},
+			}
+			fp, fpErr := fingerprint.Generate(fpData)
+			if fpErr == nil {
+				score, _ := p.trustStore.GetTrustScore(fp)
+				w.Header().Set("X-Verilink-Trust-Score", fmt.Sprintf("%d", score))
+			}
+		}
+
 		log.Printf("SIGNED: method=%s uri=%s", r.Method, r.URL)
+		w.Header().Set("X-Verilink-Auth-Status", "signed-verified")
 		p.proxy.ServeHTTP(w, r)
 		return
 	}
@@ -102,7 +145,14 @@ func (p *EdgeVerifierProxy) buildTargetURI(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.RequestURI())
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	}
+	host := r.Host
+	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+		host = fwdHost
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, host, r.URL.RequestURI())
 }
 
 func main() {
@@ -112,7 +162,7 @@ func main() {
 		requireSignatures bool
 	)
 
-	flag.StringVar(&externalBaseURL, "external-base-url", "", "Base URL for @target-uri construction")
+	flag.StringVar(&externalBaseURL, "external-base-url", "", "Base URL for @target-uri construction (mandatory behind a TLS-terminating proxy)")
 	flag.StringVar(&agentKeysPath, "agent-keys-path", "", "Path to agent keys JSON file")
 	flag.BoolVar(&requireSignatures, "require-signatures", false, "Require RFC 9421 signatures on all requests")
 	flag.Parse()

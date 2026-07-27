@@ -87,16 +87,17 @@ function computeContentDigest(body) {
  * @returns {string}
  */
 function buildSignatureBase({ method, targetURI, created, expires, body }) {
+  const bodyLen = body == null ? 0 : Buffer.byteLength(body);
   const lines = [
     `"@method": ${method.toUpperCase()}`,
     `"@target-uri": ${targetURI}`,
     `"@created": ${created}`,
     `"@expires": ${expires}`,
   ];
-  if (body != null) {
+  if (bodyLen > 0) {
     lines.push(`"content-digest": ${computeContentDigest(body)}`);
   }
-  return lines.join('\n');
+  return lines.join('\n') + '\n';
 }
 
 /**
@@ -107,26 +108,30 @@ function buildSignatureBase({ method, targetURI, created, expires, body }) {
  * @param {string} issuerDID    Issuer DID
  * @returns {{ signatureBase: string, sigInput: string, signature: string }}
  */
-function signRequest(req, privKeyHex, keyLabel, issuerDID) {
-  const privKeyObj = importPrivKey(privKeyHex);
-  const keyid = `vrl:agent:${issuerDID}:${keyLabel}`;
+function signRequest(req, privKeyHexOrObj, keyLabel, issuerDID) {
+  const privKeyObj = typeof privKeyHexOrObj === 'string'
+    ? importPrivKey(privKeyHexOrObj)
+    : privKeyHexOrObj;
+  const keyid = `vrl:agent:${issuerDID}|${keyLabel}`;
 
   const body = req.body || null;
+  const bodyLen = body == null ? 0 : Buffer.byteLength(body);
   const method = (req.method || 'GET').toUpperCase();
   const targetURI = req.url;
 
   const now = Math.floor(Date.now() / 1000);
   const created = req.created || now;
-  const expires = req.expires || now + 300; // 5 min default
+  const expires = req.expires || now + 300;
+  const nonce = crypto.randomUUID().replace(/-/g, '');
 
   const sigBase = buildSignatureBase({ method, targetURI, created, expires, body });
 
   const sigBytes = nodeCryptoSign(null, Buffer.from(sigBase), privKeyObj);
 
-  const components = ['@method', '@target-uri', '@created', '@expires'];
-  if (body != null) components.push('content-digest');
+  const components = ['"@method"', '"@target-uri"', '"@created"', '"@expires"'];
+  if (bodyLen > 0) components.push('"content-digest"');
 
-  const sigInput = `keyid="${keyid}",created=${created},expires=${expires},components="${components.join(' ')}"`;
+  const sigInput = `${components.join(' ')};keyid="${keyid}";created=${created};expires=${expires};nonce=${nonce}`;
   const signature = b64url(sigBytes);
 
   return { signatureBase: sigBase, sigInput, signature };
@@ -144,22 +149,58 @@ function signRequest(req, privKeyHex, keyLabel, issuerDID) {
  */
 function verifySignatureInput(sigInputHeader, sigHeader, method, targetURI, getBody, lookupKey) {
   try {
+    if (!sigInputHeader || !sigInputHeader.trim()) {
+      return { valid: false, keyid: '', reason: 'empty signature-input header' };
+    }
+
+    const parts = sigInputHeader.split(';');
+    const componentsStr = parts[0].trim();
+    if (!componentsStr) {
+      return { valid: false, keyid: '', reason: 'missing covered-component list' };
+    }
+
     const params = {};
-    for (const part of sigInputHeader.split(',')) {
-      const [k, ...v] = part.split('=');
-      params[k.trim()] = v.join('=').trim().replace(/^"|"$/g, '');
+    for (const part of parts.slice(1)) {
+      const eqIdx = part.indexOf('=');
+      if (eqIdx < 0) continue;
+      const k = part.slice(0, eqIdx).trim();
+      const v = part.slice(eqIdx + 1).trim().replace(/^"|"$/g, '');
+      params[k] = v;
     }
 
     const keyid = params.keyid;
+    if (!keyid) {
+      return { valid: false, keyid: '', reason: 'missing keyid' };
+    }
+
     const created = Number(params.created);
     const expires = Number(params.expires);
+    const nonce = params.nonce || '';
+
+    const now = Math.floor(Date.now() / 1000);
+    const maxSkew = 30;
+    if (created && now < created - maxSkew) {
+      return { valid: false, keyid, reason: `signature created in the future: created=${created} now=${now}` };
+    }
+    if (expires && now > expires + maxSkew) {
+      return { valid: false, keyid, reason: `signature expired: expires=${expires} now=${now}` };
+    }
+    if (created && expires && expires - created > 300) {
+      return { valid: false, keyid, reason: `validity window exceeds 300 seconds` };
+    }
+    if (!nonce) {
+      return { valid: false, keyid, reason: 'missing nonce in signature-input' };
+    }
 
     const body = getBody();
     const sigBase = buildSignatureBase({ method, targetURI, created, expires, body });
 
     const pubKeyObj = lookupKey(keyid);
-    const sigBytes = Buffer.from(sigHeader, 'base64url');
+    if (!pubKeyObj) {
+      return { valid: false, keyid, reason: `unknown keyid: ${keyid}` };
+    }
 
+    const sigBytes = Buffer.from(sigHeader, 'base64url');
     const valid = nodeCryptoVerify(null, Buffer.from(sigBase), pubKeyObj, sigBytes);
     return { valid, keyid };
   } catch (err) {

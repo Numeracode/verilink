@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,8 +44,20 @@ func TestSignRequest(t *testing.T) {
 	if req.Header.Get("Signature") == "" {
 		t.Error("Signature header not set")
 	}
-	if !strings.Contains(req.Header.Get("Signature-Input"), "vrl:agent:did:key:test-agent:default") {
+	if !strings.Contains(req.Header.Get("Signature-Input"), "vrl:agent:did:key:test-agent|default") {
 		t.Errorf("Signature-Input missing keyid: %s", req.Header.Get("Signature-Input"))
+	}
+}
+
+func TestSignRequest_NilBody(t *testing.T) {
+	c := testClient(t)
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:9999/v1/trust", nil)
+
+	if err := c.SignRequest(req, "default"); err != nil {
+		t.Fatalf("SignRequest with nil body: %v", err)
+	}
+	if req.Header.Get("Signature-Input") == "" {
+		t.Error("Signature-Input header not set")
 	}
 }
 
@@ -82,6 +95,9 @@ func TestMakeRequest_Unsigned(t *testing.T) {
 	if req.Header.Get("Signature") != "" {
 		t.Error("Signature should not be set for unsigned request")
 	}
+	if req.Header.Get("Content-Type") != "" {
+		t.Errorf("Content-Type should not be set for bodyless request, got %q", req.Header.Get("Content-Type"))
+	}
 }
 
 func TestSignRequest_RoundTrip(t *testing.T) {
@@ -89,7 +105,10 @@ func TestSignRequest_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	pub := priv.Public().(ed25519.PublicKey)
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("failed to assert public key type")
+	}
 
 	c, err := NewClient(Config{
 		AttestationURL: "http://localhost:9999",
@@ -111,23 +130,13 @@ func TestSignRequest_RoundTrip(t *testing.T) {
 	sigInputHeader := req.Header.Get("Signature-Input")
 	sigHeader := req.Header.Get("Signature")
 
-	// Re-read body since SignRequest consumed it
-	req.Body = httptest.NewRequest(http.MethodPost, "http://localhost:9999/v1/attestations/submit", bytes.NewReader(body)).Body
-	defer req.Body.Close()
-
 	targetURI := "http://localhost:9999/v1/attestations/submit"
-	getBody := func() []byte {
-		b, _ := httptest.NewRequest(http.MethodPost, targetURI, bytes.NewReader(body)).Body.(interface {
-			Read(p []byte) (int, error)
-		})
-		_ = b
-		return body
-	}
+	getBody := func() []byte { return body }
 	lookupKey := func(keyid string) (ed25519.PublicKey, error) {
-		if keyid == "vrl:agent:did:key:roundtrip:default" {
+		if keyid == "vrl:agent:did:key:roundtrip|default" {
 			return pub, nil
 		}
-		return nil, nil
+		return nil, fmt.Errorf("unknown keyid: %s", keyid)
 	}
 
 	if err := requestsigin.VerifySignatureInput(sigInputHeader, sigHeader, http.MethodPost, targetURI, getBody, lookupKey); err != nil {

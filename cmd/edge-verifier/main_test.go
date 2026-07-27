@@ -28,7 +28,7 @@ func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 		t.Fatalf("Failed to generate keypair: %v", err)
 	}
 
-	keyID := "vrl:agent:did:web:example.com:agent1:signing-key"
+	keyID := "vrl:agent:did:web:example.com:agent1|signing-key"
 	if err := registry.Register(&requestsigin.AgentEntry{
 		DID: "did:web:example.com:agent1", KeyLabel: "signing-key",
 		PublicKeyB64: base64.RawURLEncoding.EncodeToString(pub),
@@ -124,7 +124,7 @@ func TestEdgeVerifierProxy_InvalidSignature(t *testing.T) {
 		t.Fatalf("Failed to generate keypair: %v", err)
 	}
 
-	keyID := "vrl:agent:did:web:example.com:agent1:signing-key"
+	keyID := "vrl:agent:did:web:example.com:agent1|signing-key"
 	if err := registry.Register(&requestsigin.AgentEntry{
 		DID: "did:web:example.com:agent1", KeyLabel: "signing-key",
 		PublicKeyB64: base64.RawURLEncoding.EncodeToString(pub),

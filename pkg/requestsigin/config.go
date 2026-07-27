@@ -11,10 +11,10 @@ import (
 )
 
 type AgentEntry struct {
-	DID         string   `json:"did"`
-	KeyLabel    string   `json:"key_label"`
-	PublicKeyB64 string  `json:"public_key"`
-	AllowedURIs []string `json:"allowed_uris,omitempty"`
+	DID          string   `json:"did"`
+	KeyLabel     string   `json:"key_label"`
+	PublicKeyB64 string   `json:"public_key"`
+	AllowedURIs  []string `json:"allowed_uris,omitempty"`
 }
 
 type AgentRegistry struct {
@@ -78,13 +78,23 @@ func (r *AgentRegistry) Register(entry *AgentEntry) error {
 		return fmt.Errorf("did and key_label are required")
 	}
 
-	keyID := fmt.Sprintf("vrl:agent:%s:%s", entry.DID, entry.KeyLabel)
+	keyID := fmt.Sprintf("vrl:agent:%s|%s", entry.DID, entry.KeyLabel)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.byKey[keyID] = entry
-	r.byDID[entry.DID] = append(r.byDID[entry.DID], entry)
+	replaced := false
+	for i, e := range r.byDID[entry.DID] {
+		if e.KeyLabel == entry.KeyLabel {
+			r.byDID[entry.DID][i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.byDID[entry.DID] = append(r.byDID[entry.DID], entry)
+	}
 	return nil
 }
 
@@ -134,12 +144,12 @@ func parseKeyID(keyid string) (did, label string, ok bool) {
 		return "", "", false
 	}
 	rest := keyid[len(prefix):]
-	parts := strings.Split(rest, ":")
-	if len(parts) < 4 {
+	sepIdx := strings.LastIndex(rest, "|")
+	if sepIdx < 0 {
 		return "", "", false
 	}
-	did = strings.Join(parts[:3], ":")
-	label = strings.Join(parts[3:], ":")
+	did = rest[:sepIdx]
+	label = rest[sepIdx+1:]
 	if did == "" || label == "" {
 		return "", "", false
 	}

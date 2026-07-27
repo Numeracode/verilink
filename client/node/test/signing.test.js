@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const crypto = require('crypto');
 
 const {
+  VeriLinkClient,
   computeContentDigest,
   buildSignatureBase,
   signRequest,
@@ -21,10 +22,6 @@ function privateKeyToHex(privKeyObj) {
   const seed = Buffer.from(jwk.d, 'base64url');
   const pub = Buffer.from(jwk.x, 'base64url');
   return Buffer.concat([seed, pub]).toString('hex');
-}
-
-function pubKeyToJwk(pubKeyObj) {
-  return pubKeyObj.export({ format: 'jwk' });
 }
 
 describe('computeContentDigest', () => {
@@ -50,14 +47,13 @@ describe('computeContentDigest', () => {
   });
 
   it('accepts null body', () => {
-    // null body should not crash; content-digest line is omitted from sig base
     const digest = computeContentDigest(null);
     assert.match(digest, /^sha-256=:[A-Za-z0-9_-]+:$/);
   });
 });
 
 describe('buildSignatureBase', () => {
-  it('builds correct base string without body', () => {
+  it('builds correct base string without body (with trailing newline)', () => {
     const base = buildSignatureBase({
       method: 'GET',
       targetURI: 'https://example.com/api',
@@ -69,7 +65,7 @@ describe('buildSignatureBase', () => {
       '"@target-uri": https://example.com/api',
       '"@created": 1234567890',
       '"@expires": 1234567950',
-    ].join('\n');
+    ].join('\n') + '\n';
     assert.strictEqual(base, expected);
   });
 
@@ -89,8 +85,19 @@ describe('buildSignatureBase', () => {
       '"@created": 1000',
       '"@expires": 2000',
       `"content-digest": ${cd}`,
-    ].join('\n');
+    ].join('\n') + '\n';
     assert.strictEqual(base, expected);
+  });
+
+  it('omits content-digest for empty string body (matches Go)', () => {
+    const base = buildSignatureBase({
+      method: 'GET',
+      targetURI: 'https://example.com',
+      created: 1,
+      expires: 2,
+      body: '',
+    });
+    assert.ok(!base.includes('content-digest'));
   });
 
   it('upper-cases the method', () => {
@@ -103,21 +110,21 @@ describe('buildSignatureBase', () => {
     assert.ok(base.startsWith('"@method": POST'));
   });
 
-  it('has no trailing newline', () => {
+  it('has trailing newline (matches Go)', () => {
     const base = buildSignatureBase({
       method: 'GET',
       targetURI: 'https://example.com',
       created: 1,
       expires: 2,
     });
-    assert.ok(!base.endsWith('\n'));
+    assert.ok(base.endsWith('\n'));
   });
 });
 
 describe('signRequest + verifySignatureInput round-trip', () => {
   const { publicKey, privateKey } = generateEd25519Keypair();
   const privHex = privateKeyToHex(privateKey);
-  const keyid = 'vrl:agent:did:test-issuer:mykey';
+  const keyid = 'vrl:agent:did:test-issuer|mykey';
 
   it('signs and verifies successfully', () => {
     const req = {
@@ -131,6 +138,7 @@ describe('signRequest + verifySignatureInput round-trip', () => {
     assert.ok(result.signature);
     assert.ok(result.sigInput.includes(`keyid="${keyid}"`));
     assert.ok(result.signatureBase.includes('"@method": POST'));
+    assert.ok(result.signatureBase.endsWith('\n'));
 
     const valid = verifySignatureInput(
       result.sigInput,
@@ -177,8 +185,6 @@ describe('signRequest + verifySignatureInput round-trip', () => {
     };
 
     const result = signRequest(req, privHex, 'mykey', 'did:test-issuer');
-
-    // Tamper with the signature
     const tamperedSig = result.signature.slice(0, -2) + 'AA';
 
     const valid = verifySignatureInput(
@@ -201,7 +207,6 @@ describe('signRequest + verifySignatureInput round-trip', () => {
     };
 
     const result = signRequest(req, privHex, 'mykey', 'did:test-issuer');
-
     const { publicKey: wrongKey } = generateEd25519Keypair();
     const valid = verifySignatureInput(
       result.sigInput,
@@ -232,5 +237,56 @@ describe('signRequest + verifySignatureInput round-trip', () => {
     );
     assert.strictEqual(valid.valid, false);
     assert.ok(valid.reason.includes('key not found'));
+  });
+
+  it('golden vector: sigInput uses ; separators and components first', () => {
+    const req = {
+      url: 'https://example.com/api',
+      method: 'GET',
+      headers: {},
+      created: 1000,
+      expires: 1300,
+    };
+
+    const result = signRequest(req, privHex, 'mykey', 'did:test-issuer');
+    const expectedPrefix = '"@method" "@target-uri" "@created" "@expires";keyid="vrl:agent:did:test-issuer|mykey";created=1000;expires=1300';
+    assert.ok(result.sigInput.startsWith(expectedPrefix), `sigInput=${result.sigInput}`);
+    assert.ok(result.sigInput.includes('nonce='));
+  });
+});
+
+describe('VeriLinkClient.signRequest', () => {
+  it('signs using the instance private key (KeyObject)', () => {
+    const { publicKey, privateKey } = generateEd25519Keypair();
+    const privHex = privateKeyToHex(privateKey);
+
+    const client = new VeriLinkClient({
+      attestationURL: 'http://localhost:9999',
+      issuerDID: 'did:test-issuer',
+      privateKeyHex: privHex,
+    });
+
+    const req = {
+      url: 'https://example.com/api/data',
+      method: 'POST',
+      headers: {},
+      body: '{"action":"test"}',
+    };
+
+    const result = client.signRequest(req, 'mykey');
+    assert.ok(result.signature);
+    assert.ok(req.headers['Signature-Input']);
+    assert.ok(req.headers['Signature']);
+    assert.ok(req.headers['Signature-Input'].includes('vrl:agent:did:test-issuer|mykey'));
+
+    const valid = verifySignatureInput(
+      req.headers['Signature-Input'],
+      req.headers['Signature'],
+      'POST',
+      'https://example.com/api/data',
+      () => req.body,
+      () => publicKey
+    );
+    assert.strictEqual(valid.valid, true);
   });
 });

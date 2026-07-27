@@ -7,10 +7,11 @@ import (
 
 // NonceCache is a thread-safe, in-memory nonce replay cache with TTL expiry.
 type NonceCache struct {
-	mu     sync.RWMutex
-	seen   map[string]time.Time
-	ttl    time.Duration
-	stopCh chan struct{}
+	mu       sync.RWMutex
+	seen     map[string]time.Time
+	ttl      time.Duration
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewNonceCache creates a NonceCache with the given TTL and starts a background
@@ -44,7 +45,7 @@ func (c *NonceCache) CheckAndConsume(nonce, keyid string) bool {
 
 // Stop stops the background sweeper goroutine.
 func (c *NonceCache) Stop() {
-	close(c.stopCh)
+	c.stopOnce.Do(func() { close(c.stopCh) })
 }
 
 // sweep periodically removes expired entries. Runs until Stop() is called.

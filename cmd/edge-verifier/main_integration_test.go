@@ -31,7 +31,7 @@ func TestFullSignedFlow(t *testing.T) {
 		t.Fatalf("keypair: %v", err)
 	}
 
-	keyID := "vrl:agent:did:web:e2e.test:agent1:key"
+	keyID := "vrl:agent:did:web:e2e.test:agent1|key"
 	if err := registry.Register(&requestsigin.AgentEntry{
 		DID: "did:web:e2e.test:agent1", KeyLabel: "key",
 		PublicKeyB64: base64.RawURLEncoding.EncodeToString(pub),

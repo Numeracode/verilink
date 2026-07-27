@@ -3,7 +3,11 @@ package requestsigin
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestComputeKeyHash(t *testing.T) {
@@ -44,7 +48,7 @@ func TestBuildSignatureBase(t *testing.T) {
 		`"@expires": 1234567950`,
 		`"content-digest": sha-256=:`,
 	} {
-		if !contains(base, want) {
+		if !strings.Contains(base, want) {
 			t.Errorf("signature base missing %q", want)
 		}
 	}
@@ -58,7 +62,7 @@ func TestBuildSignatureBaseNoBody(t *testing.T) {
 
 	base := BuildSignatureBase(method, uri, created, expires, nil)
 
-	if contains(base, "content-digest") {
+	if strings.Contains(base, "content-digest") {
 		t.Error("signature base should not contain content-digest for nil body")
 	}
 }
@@ -68,8 +72,9 @@ func TestSignAndVerify(t *testing.T) {
 	keyID := "test-key-1"
 	method := "POST"
 	uri := "https://example.com/api"
-	var created int64 = 1234567890
-	var expires int64 = 1234567950
+	now := time.Now().Unix()
+	created := now
+	expires := now + 300
 	body := []byte(`{"data":"test"}`)
 
 	sigInput, sig, err := Sign(method, uri, created, expires, body, keyID, priv)
@@ -96,13 +101,24 @@ func TestSignAndVerify(t *testing.T) {
 	}
 }
 
+func TestVerifyWrongKeyLength(t *testing.T) {
+	err := Verify("base", "sig", ed25519.PublicKey(make([]byte, 10)))
+	if err == nil {
+		t.Fatal("expected error for wrong key length")
+	}
+	if !strings.Contains(err.Error(), "invalid public key length") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestVerifySignatureInput(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	keyID := "k1"
 	method := "POST"
 	uri := "https://example.com/hook"
-	var created int64 = 900
-	var expires int64 = 1800
+	now := time.Now().Unix()
+	created := now
+	expires := now + 300
 	body := []byte(`{"ok":true}`)
 
 	sigInput, sig, err := Sign(method, uri, created, expires, body, keyID, priv)
@@ -114,7 +130,7 @@ func TestVerifySignatureInput(t *testing.T) {
 		if kid == keyID {
 			return pub, nil
 		}
-		return nil, nil
+		return nil, fmt.Errorf("unknown keyid: %s", kid)
 	}
 
 	getBody := func() []byte { return body }
@@ -127,6 +143,103 @@ func TestVerifySignatureInput(t *testing.T) {
 	err = VerifySignatureInput(sigInput, "tampered", method, uri, getBody, lookupKey)
 	if err == nil {
 		t.Error("should fail with bad signature")
+	}
+}
+
+func TestVerifySignatureInputUnknownKeyID(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyID := "known-key"
+	method := "GET"
+	uri := "https://example.com/hook"
+	now := time.Now().Unix()
+	created := now
+	expires := now + 300
+
+	sigInput, sig, err := Sign(method, uri, created, expires, nil, keyID, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	lookupKey := func(kid string) (ed25519.PublicKey, error) {
+		if kid == "unknown-key" {
+			return pub, nil
+		}
+		return nil, fmt.Errorf("unknown keyid: %s", kid)
+	}
+
+	err = VerifySignatureInput(sigInput, sig, method, uri, func() []byte { return nil }, lookupKey)
+	if err == nil {
+		t.Fatal("expected error for unknown keyid")
+	}
+	if !strings.Contains(err.Error(), "key lookup failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifySignatureInputExpired(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyID := "exp-key"
+	method := "GET"
+	uri := "https://example.com/api"
+	created := time.Now().Unix() - 600
+	expires := created + 60
+
+	sigInput, sig, err := Sign(method, uri, created, expires, nil, keyID, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	err = VerifySignatureInput(sigInput, sig, method, uri, func() []byte { return nil }, func(string) (ed25519.PublicKey, error) { return pub, nil })
+	if err == nil {
+		t.Fatal("expected error for expired signature")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifySignatureInputFutureCreated(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyID := "future-key"
+	method := "GET"
+	uri := "https://example.com/api"
+	created := time.Now().Unix() + 600
+	expires := created + 60
+
+	sigInput, sig, err := Sign(method, uri, created, expires, nil, keyID, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	err = VerifySignatureInput(sigInput, sig, method, uri, func() []byte { return nil }, func(string) (ed25519.PublicKey, error) { return pub, nil })
+	if err == nil {
+		t.Fatal("expected error for future-dated signature")
+	}
+	if !strings.Contains(err.Error(), "future") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifySignatureInputWindowTooWide(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyID := "wide-key"
+	method := "GET"
+	uri := "https://example.com/api"
+	now := time.Now().Unix()
+	created := now
+	expires := now + 600
+
+	sigInput, sig, err := Sign(method, uri, created, expires, nil, keyID, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	err = VerifySignatureInput(sigInput, sig, method, uri, func() []byte { return nil }, func(string) (ed25519.PublicKey, error) { return pub, nil })
+	if err == nil {
+		t.Fatal("expected error for too-wide validity window")
+	}
+	if !strings.Contains(err.Error(), "validity window") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -144,20 +257,42 @@ func TestComputeContentDigest(t *testing.T) {
 	if len(d1) == 0 {
 		t.Error("empty digest")
 	}
-	if !contains(d1, "sha-256=:") {
+	if !strings.Contains(d1, "sha-256=:") {
 		t.Errorf("digest missing prefix: %s", d1)
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstring(s, sub))
+func TestSignIncludesNonce(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	now := time.Now().Unix()
+	sigInput, _, err := Sign("GET", "https://example.com", now, now+300, nil, "k1", priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if !strings.Contains(sigInput, "nonce=") {
+		t.Errorf("sigInput missing nonce: %s", sigInput)
+	}
 }
 
-func containsSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+func TestParseSignatureInputEmpty(t *testing.T) {
+	_, err := parseSignatureInput("")
+	if err == nil {
+		t.Fatal("expected error for empty header")
 	}
-	return false
+	_, err = parseSignatureInput("   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only header")
+	}
+}
+
+func TestComputeKeyHashBase64(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	h := ComputeKeyHash(pub)
+	decoded, err := base64.RawURLEncoding.DecodeString(h)
+	if err != nil {
+		t.Fatalf("hash not valid base64url: %v", err)
+	}
+	if len(decoded) != 32 {
+		t.Errorf("expected 32-byte hash, got %d", len(decoded))
+	}
 }
