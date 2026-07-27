@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/messagesgoel-blip/verilink/pkg/attestation"
+	"github.com/messagesgoel-blip/verilink/pkg/requestsigin"
 )
 
 // Config holds the client configuration.
@@ -169,4 +170,55 @@ func (c *Client) IsTrusted(ctx context.Context, fingerprint string, threshold in
 		return false, err
 	}
 	return score >= threshold, nil
+}
+
+// SignRequest signs an HTTP request using RFC 9421 HTTP Message Signatures.
+// It adds Signature-Input and Signature headers to the request.
+// keyLabel is used to construct the keyid (e.g., "default" → "vrl:agent:<did>:default").
+func (c *Client) SignRequest(req *http.Request, keyLabel string) error {
+	body, _ := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(bytes.NewReader(body))
+
+	targetURI := req.URL.String()
+	if !strings.HasPrefix(targetURI, "http") {
+		targetURI = "https://" + req.Host + req.URL.String()
+	}
+
+	created := time.Now().Unix()
+	expires := created + 300 // 5 min
+
+	keyID := fmt.Sprintf("vrl:agent:%s:%s", c.cfg.IssuerDID, keyLabel)
+	sigInput, sig, err := requestsigin.Sign(req.Method, targetURI, created, expires, body, keyID, c.cfg.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("verilink: sign request: %w", err)
+	}
+
+	req.Header.Set("Signature-Input", sigInput)
+	req.Header.Set("Signature", sig)
+	return nil
+}
+
+// MakeRequest creates and optionally signs an HTTP request.
+// If keyLabel is non-empty, the request is signed with RFC 9421.
+func (c *Client) MakeRequest(ctx context.Context, method, path string, body []byte, keyLabel string) (*http.Request, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.cfg.AttestationURL+path, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("verilink: build request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	if keyLabel != "" {
+		if err := c.SignRequest(req, keyLabel); err != nil {
+			return nil, err
+		}
+	}
+
+	return req, nil
 }
