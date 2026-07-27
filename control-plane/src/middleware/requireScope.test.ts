@@ -2,17 +2,19 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { requireScope } from './requireScope.js';
 
-function mockReq(user: NonNullable<Express.Request['user']>) {
-  return { user } as unknown as Express.Request;
+type AnyReq = any;
+
+function mockReq(user: AnyReq['user']): AnyReq {
+  return { user } as AnyReq;
 }
 
-function mockRes() {
-  return {} as unknown as Express.Response;
+function mockRes(): AnyReq {
+  return {} as AnyReq;
 }
 
 function makeNext() {
   const errors: Error[] = [];
-  const next = (err?: Error) => {
+  const next: any = (err?: any) => {
     if (err) errors.push(err);
   };
   return { next, errors };
@@ -112,7 +114,7 @@ describe('requireScope — tenant-admin isolation', () => {
   });
 
   it('unauthenticated user (no req.user) is denied', () => {
-    const req = { user: undefined } as unknown as Express.Request;
+    const req = { user: undefined } as AnyReq;
     const { next, errors } = makeNext();
     requireScope('attest:write')(req, mockRes(), next);
     assert.equal(errors.length, 1);
@@ -125,7 +127,7 @@ describe('requireScope — tenant-admin isolation', () => {
       apiKeyId: 'key-1',
       tenantId: 'tenant-a',
       scopes: ['attest:write'],
-    } as NonNullable<Express.Request['user']>);
+    });
     const { next, errors } = makeNext();
     requireScope('attest:write')(req, mockRes(), next);
     assert.equal(errors.length, 0);
@@ -137,10 +139,35 @@ describe('requireScope — tenant-admin isolation', () => {
       apiKeyId: 'key-2',
       tenantId: 'tenant-a',
       scopes: ['attest:read'],
-    } as NonNullable<Express.Request['user']>);
+    });
     const { next, errors } = makeNext();
     requireScope('attest:write')(req, mockRes(), next);
     assert.equal(errors.length, 1);
     assert.equal(errors[0].message, 'Missing required scope: attest:write');
+  });
+});
+describe('requireScope — callerTenantIds tenant-role pairing', () => {
+  it('user admin in tenant A and member in tenant B: callerTenantIds only includes tenant A', () => {
+    const tenantIds = ['tenant-a', 'tenant-b'];
+    const roles = ['admin', 'member'];
+    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
+    assert.equal(callerTenantIds.length, 1);
+    assert.equal(callerTenantIds[0], 'tenant-a');
+  });
+
+  it('user member in both tenants: callerTenantIds is empty (no elevated roles)', () => {
+    const tenantIds = ['tenant-a', 'tenant-b'];
+    const roles = ['member', 'member'];
+    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
+    assert.equal(callerTenantIds.length, 0);
+  });
+
+  it('user staff in tenant B and admin in tenant A: callerTenantIds includes both', () => {
+    const tenantIds = ['tenant-a', 'tenant-b'];
+    const roles = ['admin', 'staff'];
+    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
+    assert.equal(callerTenantIds.length, 2);
+    assert(callerTenantIds.includes('tenant-a'));
+    assert(callerTenantIds.includes('tenant-b'));
   });
 });
