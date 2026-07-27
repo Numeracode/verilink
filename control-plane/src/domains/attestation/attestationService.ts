@@ -134,19 +134,32 @@ export async function submitAttestation(opts: {
     throw new AppError(CODES.BAD_REQUEST, `visibility must be 'participants' or 'public', got '${visibility}'`);
   }
 
-  // 8. Compute token_digest
+  // 8. Compute token_digest and facts_hash
   const tokenDigest = sha256hex(jwsToken);
   const facts = JSON.parse(vp.factsJson);
-  const factsHash = computeFactsHash(facts);
+  let factsHash: string;
+  try {
+    factsHash = computeFactsHash(facts);
+  } catch (err: any) {
+    throw new AppError(CODES.BAD_REQUEST, `facts_hash computation failed: ${err.message}`);
+  }
 
-  // 9. Lazy subject creation — map legacy DIDs to vrl:p:<uuid>
+  // 9. Lazy subject creation
   let subjectId = verifiedSubjectId;
-  if (!subjectId.startsWith('vrl:p:')) {
-    // Legacy subject (e.g. did:key:..., fingerprint hash): find or create
-    // a native principal with metadata.legacy_did mapping
+  if (isLegacy && !subjectId.startsWith('vrl:p:')) {
+    // Legacy v0 path: map legacy DIDs to vrl:p:<uuid> atomically
     const principal = await principalRepo.findOrCreateByLegacyDID(verifiedSubjectId);
     subjectId = principal.id;
   } else {
+    // Native v1: require valid vrl:p:<uuid> format
+    if (!subjectId.startsWith('vrl:p:')) {
+      throw new AppError(CODES.BAD_REQUEST, `native v1 subject must be vrl:p:<uuid>, got: ${subjectId}`);
+    }
+    // Validate UUID format (vrl:p: followed by a UUID)
+    const uuidPart = subjectId.slice('vrl:p:'.length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuidPart)) {
+      throw new AppError(CODES.BAD_REQUEST, `native v1 subject has invalid UUID: ${subjectId}`);
+    }
     const subject = await principalRepo.getPrincipal(subjectId);
     if (!subject) {
       await principalRepo.createPrincipal(subjectId, 'agent');

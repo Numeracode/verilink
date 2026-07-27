@@ -60,27 +60,29 @@ export async function findOrCreateByLegacyDID(
   );
   if (existing.length > 0) return existing[0];
 
-  // Atomically create a new native principal. ON CONFLICT handles the
-  // race where another request created it between our SELECT and INSERT.
+  // Create a new native principal. The unique index on
+  // (metadata->>'legacy_did') ensures only one insert succeeds for a
+  // given legacy DID. Concurrent inserts get a 23505 and re-query.
   const nativeID = `vrl:p:${randomUUID()}`;
-  const { rows } = await pool.query(
-    `INSERT INTO principals (id, entity_kind, metadata)
-     VALUES ($1, 'agent', $2)
-     ON CONFLICT (id) DO NOTHING
-     RETURNING *`,
-    [nativeID, JSON.stringify({ legacy_did: legacyDID })]
-  );
-  if (rows.length === 0) {
-    // Race: re-query by legacy DID
-    const { rows: retry } = await pool.query(
-      "SELECT * FROM principals WHERE metadata->>'legacy_did' = $1 LIMIT 1",
-      [legacyDID]
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO principals (id, entity_kind, metadata)
+       VALUES ($1, 'agent', $2)
+       RETURNING *`,
+      [nativeID, JSON.stringify({ legacy_did: legacyDID })]
     );
-    if (retry.length > 0) return retry[0];
-    // Fallback: return the created one (shouldn't happen)
-    return (await getPrincipal(nativeID))!;
+    return rows[0];
+  } catch (err: any) {
+    if (err.code === '23505') {
+      // Another request created it — re-query
+      const { rows: retry } = await pool.query(
+        "SELECT * FROM principals WHERE metadata->>'legacy_did' = $1 LIMIT 1",
+        [legacyDID]
+      );
+      if (retry.length > 0) return retry[0];
+    }
+    throw err;
   }
-  return rows[0];
 }
 
 export async function listPrincipals(opts: {
