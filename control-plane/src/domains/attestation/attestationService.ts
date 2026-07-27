@@ -2,10 +2,12 @@
 import { createHash } from 'node:crypto';
 import * as attestationRepo from './attestationRepository.js';
 import * as principalRepo from '../principal/principalRepository.js';
+import { preParseJWS } from './jws.js';
+import { validateSchema, SchemaValidationError } from './schemaValidator.js';
+import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClient.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
 
-// Canonical JSON serialization (RFC 8785 JCS - simplified for v1)
 function canonicalize(obj: unknown): string {
   function sortKeys(o: unknown): unknown {
     if (Array.isArray(o)) return o.map(sortKeys);
@@ -25,87 +27,136 @@ function sha256hex(input: string): string {
 
 export async function submitAttestation(opts: {
   jwsToken: string;
-  verified: {
-    issuerId: string;
-    subjectId: string;
-    keyId: string;
-    payload: {
-      type: string;
-      facts: Record<string, unknown>;
-      trustLevelDelta: number;
-      schemaVersion?: string;
-      visibility?: string;
-      observationId?: string;
-      issuedAt: Date;
-      expiresAt?: Date;
-      jti?: string;
-    };
-  };
 }): Promise<attestationRepo.Attestation> {
-  const { jwsToken, verified } = opts;
+  const { jwsToken } = opts;
 
-  // Validate trust_delta range
-  if (verified.payload.trustLevelDelta < -100 || verified.payload.trustLevelDelta > 100) {
+  // 1. Pre-parse JWS for iss/kid/iat
+  let preParsed;
+  try {
+    preParsed = preParseJWS(jwsToken);
+  } catch (err: any) {
+    throw new AppError(CODES.BAD_REQUEST, `malformed JWS: ${err.message}`);
+  }
+
+  const { header, payload } = preParsed;
+  const issuerId = payload.iss;
+  const kid = header.kid;
+  const iat = payload.iat ? new Date(payload.iat * 1000) : undefined;
+
+  if (!issuerId) {
+    throw new AppError(CODES.BAD_REQUEST, 'JWS missing iss claim');
+  }
+  if (!iat) {
+    throw new AppError(CODES.BAD_REQUEST, 'JWS missing iat claim');
+  }
+
+  // 2. Look up issuer principal + issuer record
+  const issuer = await principalRepo.getPrincipal(issuerId);
+  if (!issuer) {
+    throw new AppError(CODES.BAD_REQUEST, `unknown issuer: ${issuerId}`);
+  }
+  const issuerRecord = await principalRepo.getIssuer(issuerId);
+  if (!issuerRecord) {
+    throw new AppError(CODES.BAD_REQUEST, `principal ${issuerId} is not an issuer`);
+  }
+
+  // 3. Resolve candidate keys
+  let candidateKeys: principalRepo.PrincipalKey[];
+  if (kid) {
+    const key = await principalRepo.getKeyByKid(issuerId, kid);
+    if (!key) {
+      throw new AppError(CODES.BAD_REQUEST, `unknown key id: ${kid} for issuer ${issuerId}`);
+    }
+    candidateKeys = [key];
+  } else {
+    candidateKeys = await principalRepo.getActiveKeysAt(issuerId, iat);
+  }
+
+  if (candidateKeys.length === 0) {
+    throw new AppError(CODES.BAD_REQUEST, `no active keys found for issuer ${issuerId} at iat`);
+  }
+
+  // 4. Synchronous signature verification
+  const keyCandidates: KeyCandidate[] = candidateKeys.map((k) => ({
+    keyId: k.key_id,
+    publicKeyRaw: k.public_key_raw,
+  }));
+
+  const verifyResult = await verifyAttestation(jwsToken, keyCandidates);
+  if (!verifyResult.valid || !verifyResult.payload) {
+    throw new AppError(CODES.BAD_REQUEST, `signature verification failed: ${verifyResult.error || 'unknown'}`);
+  }
+
+  const vp = verifyResult.payload;
+  const verifiedIssuerId = verifyResult.issuerId!;
+  const verifiedSubjectId = verifyResult.subjectId!;
+
+  // 5. Schema validation
+  try {
+    validateSchema(vp.attestationType, vp.schemaVersion, JSON.parse(vp.factsJson));
+  } catch (err: any) {
+    if (err instanceof SchemaValidationError) {
+      throw new AppError(CODES.BAD_REQUEST, `schema validation failed: ${err.message}`);
+    }
+    throw err;
+  }
+
+  // 6. Validate trust_delta range
+  if (vp.trustLevelDelta < -100 || vp.trustLevelDelta > 100) {
     throw new AppError(CODES.BAD_REQUEST, 'trust_delta must be between -100 and 100');
   }
 
-  // Validate attestation_type vs trust_delta sign
-  const isNegative = verified.payload.type === 'negative_incident';
-  if (isNegative && verified.payload.trustLevelDelta >= 0) {
+  // 7. Validate attestation_type vs trust_delta sign
+  const isNegative = vp.attestationType === 'negative_incident';
+  if (isNegative && vp.trustLevelDelta >= 0) {
     throw new AppError(CODES.BAD_REQUEST, 'negative_incident must have negative trust_delta');
   }
-  if (!isNegative && verified.payload.trustLevelDelta < 0) {
+  if (!isNegative && vp.trustLevelDelta < 0) {
     throw new AppError(CODES.BAD_REQUEST, 'non-negative_incident must have non-negative trust_delta');
   }
 
-  // Verify issuer exists and is an issuer
-  const issuer = await principalRepo.getPrincipal(verified.issuerId);
-  if (!issuer) {
-    throw new AppError(CODES.BAD_REQUEST, 'Issuer principal not found');
-  }
-  if (issuer.entity_kind === 'agent') {
-    throw new AppError(CODES.BAD_REQUEST, 'Principal is not an issuer');
-  }
-
-  // Lazy subject creation
-  let subject = await principalRepo.getPrincipal(verified.subjectId);
-  if (!subject) {
-    await principalRepo.createPrincipal(verified.subjectId, 'agent');
-  }
-
-  // Compute facts_hash
+  // 8. Dedup on token_digest
   const tokenDigest = sha256hex(jwsToken);
-  const factsHash = sha256hex(canonicalize(verified.payload.facts));
+  const existing = await attestationRepo.findByTokenDigest(tokenDigest);
+  if (existing) {
+    throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
+  }
 
+  // 9. Lazy subject creation
+  let subject = await principalRepo.getPrincipal(verifiedSubjectId);
+  if (!subject) {
+    await principalRepo.createPrincipal(verifiedSubjectId, 'agent');
+  }
+
+  // 10. Compute facts_hash
+  const facts = JSON.parse(vp.factsJson);
+  const factsHash = sha256hex(canonicalize(facts));
+
+  // 11. Store attestation transactionally
   try {
     return await withTransaction(async (_client) => {
-      const att = await attestationRepo.createAttestation({
-        issuerId: verified.issuerId,
-        subjectId: verified.subjectId,
+      return await attestationRepo.createAttestation({
+        issuerId: verifiedIssuerId,
+        subjectId: verifiedSubjectId,
         jwsToken,
         tokenDigest,
-        payload: verified.payload as unknown as Record<string, unknown>,
-        facts: verified.payload.facts,
+        payload: { type: vp.attestationType, facts, trust_level_delta: vp.trustLevelDelta, schema_version: vp.schemaVersion, visibility: vp.visibility, observation_id: vp.observationId },
+        facts,
         factsHash,
-        visibility: verified.payload.visibility || 'participants',
-        trustDelta: verified.payload.trustLevelDelta,
-        attestationType: verified.payload.type,
-        schemaVersion: verified.payload.schemaVersion || '0',
-        jti: verified.payload.jti,
-        observationId: verified.payload.observationId,
-        issuedAt: verified.payload.issuedAt,
-        expiresAt: verified.payload.expiresAt,
-        verifiedKeyId: verified.keyId,
+        visibility: vp.visibility || 'participants',
+        trustDelta: vp.trustLevelDelta,
+        attestationType: vp.attestationType,
+        schemaVersion: vp.schemaVersion || '0',
+        jti: vp.jti || undefined,
+        observationId: vp.observationId || undefined,
+        issuedAt: new Date(vp.issuedAtUnix * 1000),
+        expiresAt: vp.expiresAtUnix > 0 ? new Date(vp.expiresAtUnix * 1000) : undefined,
+        verifiedKeyId: verifyResult.verifiedKeyId!,
       });
-
-      // TODO: Enqueue RunVeriRank job (debounced, per spec 4.5)
-      // For v1, score computation is triggered explicitly via POST /v1/scores/recompute
-
-      return att;
     });
   } catch (err: any) {
     if (err.code === '23505') {
-      throw new AppError(CODES.CONFLICT, 'Attestation already submitted (duplicate token)');
+      throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
     }
     throw err;
   }

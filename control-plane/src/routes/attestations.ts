@@ -9,13 +9,14 @@ router.use(authMiddleware);
 
 router.post('/submit', defineHandler({
   async handler(req, res) {
-    const { token, verified } = req.body;
-    // In v1, the caller provides the verified payload (from trust-engine gRPC)
-    // In production, the control plane would call trust-engine.VerifyAttestation
-    const att = await attestationService.submitAttestation({
-      jwsToken: token,
-      verified,
-    });
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      throw new (await import('../shared/errors/AppError.js')).AppError(
+        (await import('../shared/errors/AppError.js')).CODES.BAD_REQUEST,
+        'Missing required field: token'
+      );
+    }
+    const att = await attestationService.submitAttestation({ jwsToken: token });
     created(res, att);
   },
 }));

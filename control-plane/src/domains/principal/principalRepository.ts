@@ -143,3 +143,41 @@ export async function updatePrincipal(id: string, fields: { entity_kind?: string
   params.push(id);
   await pool.query(`UPDATE principals SET ${sets.join(', ')} WHERE id = $${idx}`, params);
 }
+
+export interface Issuer {
+  principal_id: string;
+  trust_weight: string;
+  is_bootstrap: boolean;
+  verified_at: Date | null;
+  created_at: Date;
+}
+
+export async function getIssuer(principalId: string): Promise<Issuer | null> {
+  const { rows } = await pool.query(
+    'SELECT * FROM issuers WHERE principal_id = $1',
+    [principalId]
+  );
+  return rows[0] || null;
+}
+
+export async function getKeyByKid(principalId: string, keyId: string): Promise<PrincipalKey | null> {
+  const { rows } = await pool.query(
+    `SELECT * FROM principal_keys
+     WHERE principal_id = $1 AND key_id = $2 AND revoked_at IS NULL`,
+    [principalId, keyId]
+  );
+  return rows[0] || null;
+}
+
+export async function getActiveKeysAt(principalId: string, iat: Date): Promise<PrincipalKey[]> {
+  const { rows } = await pool.query(
+    `SELECT * FROM principal_keys
+     WHERE principal_id = $1
+       AND revoked_at IS NULL
+       AND valid_from <= $2
+       AND (valid_until IS NULL OR valid_until >= $2)
+     ORDER BY valid_from`,
+    [principalId, iat]
+  );
+  return rows;
+}
