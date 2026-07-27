@@ -8,17 +8,35 @@ import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClie
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
 
+// RFC 8785 JSON Canonicalization Scheme (JCS)
+// Sorts object properties by UTF-16 code unit order (not locale-dependent).
 function canonicalize(obj: unknown): string {
-  function sortKeys(o: unknown): unknown {
-    if (Array.isArray(o)) return o.map(sortKeys);
-    if (o && typeof o === 'object' && !(o instanceof Date)) {
-      return Object.fromEntries(
-        Object.entries(o).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sortKeys(v)])
-      );
+  return JSON.stringify(canonicalizeValue(obj));
+}
+
+function canonicalizeValue(value: unknown): unknown {
+  if (value === null) return null;
+  if (Array.isArray(value)) return value.map(canonicalizeValue);
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => {
+        // RFC 8785: compare by UTF-16 code unit sequence
+        const aLen = a.length, bLen = b.length;
+        const minLen = Math.min(aLen, bLen);
+        for (let i = 0; i < minLen; i++) {
+          if (a.charCodeAt(i) !== b.charCodeAt(i)) {
+            return a.charCodeAt(i) - b.charCodeAt(i);
+          }
+        }
+        return aLen - bLen;
+      });
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of entries) {
+      if (v !== undefined) result[k] = canonicalizeValue(v);
     }
-    return o;
+    return result;
   }
-  return JSON.stringify(sortKeys(obj));
+  return value;
 }
 
 function sha256hex(input: string): string {

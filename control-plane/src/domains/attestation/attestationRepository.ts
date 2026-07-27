@@ -78,14 +78,25 @@ export async function findObservationPeer(
   observationId: string,
   client?: PoolClient,
 ): Promise<Attestation | null> {
+  // Advisory lock keyed by (issuer, subject, observation_id) to serialize
+  // concurrent first-submissions for the same observation pair.
+  if (client) {
+    const lockKey = hashToLockKey(`${issuerId}:${subjectId}:${observationId}`);
+    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey]);
+  }
   const q = `SELECT * FROM attestations
      WHERE issuer_id = $1 AND subject_id = $2 AND observation_id = $3
-     FOR UPDATE
      LIMIT 1`;
   const { rows } = client
     ? await client.query(q, [issuerId, subjectId, observationId])
     : await pool.query(q, [issuerId, subjectId, observationId]);
   return rows[0] || null;
+}
+
+function hashToLockKey(s: string): bigint {
+  const hash = require('node:crypto').createHash('sha256').update(s).digest();
+  // Use first 8 bytes as a bigint for pg_advisory_xact_lock
+  return hash.readBigInt64BE(0);
 }
 
 export async function listAttestations(opts: {

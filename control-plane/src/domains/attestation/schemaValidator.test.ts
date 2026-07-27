@@ -26,9 +26,9 @@ describe('validateSchema — behavioral', () => {
     assert.doesNotThrow(() => validateSchema('behavioral', '0', {}, 'vrl:p:test-issuer'));
   });
 
-  it('behavioral@1 accepts valid facts', () => {
+  it('behavioral@1 accepts valid facts with data object', () => {
     assert.doesNotThrow(() =>
-      validateSchema('behavioral', '1', { observation_ts: '2024-01-01T00:00:00Z', action: 'commit', count: 5 }),
+      validateSchema('behavioral', '1', { observation_ts: '2024-01-01T00:00:00Z', action: 'commit', data: { nested: 'value' } }),
     );
   });
 
@@ -46,7 +46,14 @@ describe('validateSchema — behavioral', () => {
     );
   });
 
-  it('behavioral@1 rejects nested objects', () => {
+  it('behavioral@1 rejects null observation_ts', () => {
+    assert.throws(
+      () => validateSchema('behavioral', '1', { observation_ts: null, action: 'commit' }),
+      SchemaValidationError,
+    );
+  });
+
+  it('behavioral@1 rejects nested objects under non-data keys', () => {
     assert.throws(
       () => validateSchema('behavioral', '1', { observation_ts: '2024-01-01', nested: { a: 1 } }),
       SchemaValidationError,
@@ -137,6 +144,49 @@ describe('validateSchema — native attestation types', () => {
           end: '2024-01-31',
           success_count: 100,
           failure_count: 5,
+        }),
+      SchemaValidationError,
+    );
+  });
+
+  it('transaction_summary@1 rejects null required field', () => {
+    assert.throws(
+      () =>
+        validateSchema('transaction_summary', '1', {
+          start: null,
+          end: '2024-01-31',
+          success_count: 100,
+          failure_count: 5,
+          dispute_count: 1,
+        }),
+      SchemaValidationError,
+    );
+  });
+
+  it('transaction_summary@1 rejects extra properties', () => {
+    assert.throws(
+      () =>
+        validateSchema('transaction_summary', '1', {
+          start: '2024-01-01',
+          end: '2024-01-31',
+          success_count: 100,
+          failure_count: 5,
+          dispute_count: 1,
+          extra_field: 'bad',
+        }),
+      SchemaValidationError,
+    );
+  });
+
+  it('transaction_summary@1 rejects wrong type for numeric field', () => {
+    assert.throws(
+      () =>
+        validateSchema('transaction_summary', '1', {
+          start: '2024-01-01',
+          end: '2024-01-31',
+          success_count: '100',
+          failure_count: 5,
+          dispute_count: 1,
         }),
       SchemaValidationError,
     );

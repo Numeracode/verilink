@@ -72,9 +72,17 @@ function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
   // VeriLink attestations nest behavioral claims under "vli" (per
   // pkg/attestation.AttestationClaims). Fall back to top-level for
   // non-conformant legacy tokens.
-  const vli = (jwsPayload.vli && typeof jwsPayload.vli === 'object')
+  const hasVli = jwsPayload.vli && typeof jwsPayload.vli === 'object';
+  const vli = hasVli
     ? jwsPayload.vli as Record<string, unknown>
     : jwsPayload;
+
+  // schema_version: native v1 must be explicit. Legacy tokens (no vli or
+  // vli without schema_version) default to "0" for allowlisted compatibility.
+  const explicitVersion = vli.schema_version ?? vli.schemaVersion;
+  const schemaVersion = explicitVersion != null
+    ? String(explicitVersion)
+    : (hasVli ? '1' : '0');
 
   return {
     attestationType: String(vli.type ?? vli.attestation_type ?? ''),
@@ -85,7 +93,7 @@ function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
     issuedAtUnix: Number(jwsPayload.iat ?? 0),
     expiresAtUnix: Number(jwsPayload.exp ?? 0),
     jti: String(jwsPayload.jti ?? ''),
-    schemaVersion: String(vli.schema_version ?? vli.schemaVersion ?? '1'),
+    schemaVersion,
     visibility: String(vli.visibility ?? 'participants'),
     observationId: String(vli.observation_id ?? vli.observationId ?? ''),
   };

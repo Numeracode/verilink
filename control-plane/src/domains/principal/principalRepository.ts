@@ -33,9 +33,14 @@ export async function createPrincipal(
   const { rows } = await pool.query(
     `INSERT INTO principals (id, entity_kind, owner_tenant_id, name)
      VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO NOTHING
      RETURNING *`,
     [id, entityKind, ownerTenantId || null, name || null]
   );
+  if (rows.length === 0) {
+    // Already existed — fetch it
+    return (await getPrincipal(id))!;
+  }
   return rows[0];
 }
 

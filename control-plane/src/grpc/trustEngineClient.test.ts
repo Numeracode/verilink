@@ -224,6 +224,44 @@ describe('verifyAttestation', () => {
       action: 'commit',
     });
   });
+
+  test('vli without schema_version defaults to "1" (native)', async () => {
+    const { privateKey, publicKeyRaw } = makeKey();
+    const token = signJws({
+      privateKey,
+      payload: {
+        iss: 'vrl:p:00000000-0000-4000-8000-000000000001',
+        sub: 'vrl:p:00000000-0000-4000-8000-000000000002',
+        iat: 1700000000,
+        exp: 1900000000,
+        vli: { type: 'behavioral', facts: { a: 1 }, trust_level_delta: 5 },
+      },
+    });
+    const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
+    const result = await verifyAttestation(token, candidates);
+    assert.equal(result.valid, true);
+    assert.equal(result.payload?.schemaVersion, '1');
+  });
+
+  test('legacy flattened (no vli) defaults schema_version to "0"', async () => {
+    const { privateKey, publicKeyRaw } = makeKey();
+    const token = signJws({
+      privateKey,
+      payload: {
+        iss: 'vrl:p:00000000-0000-4000-8000-000000000001',
+        sub: 'vrl:p:00000000-0000-4000-8000-000000000002',
+        iat: 1700000000,
+        exp: 1900000000,
+        type: 'behavioral',
+        facts: { action: 'scan' },
+        trust_level_delta: 5,
+      },
+    });
+    const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
+    const result = await verifyAttestation(token, candidates);
+    assert.equal(result.valid, true);
+    assert.equal(result.payload?.schemaVersion, '0');
+  });
 });
 
 function base64urlDecode(input: string): Buffer {

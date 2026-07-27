@@ -42,14 +42,17 @@ const MAX_DEPTH = 4;
 
 function checkSizeAndDepth(facts: unknown, depth = 0): void {
   const json = JSON.stringify(facts);
-  if (json.length > MAX_FACTS_BYTES) {
-    throw new SchemaValidationError(`facts exceed 8 KB limit (${json.length} bytes)`);
+  if (Buffer.byteLength(json, 'utf8') > MAX_FACTS_BYTES) {
+    throw new SchemaValidationError(
+      `facts exceed ${MAX_FACTS_BYTES} byte limit (${Buffer.byteLength(json, 'utf8')} bytes)`,
+    );
   }
   if (depth > MAX_DEPTH) {
     throw new SchemaValidationError(`facts exceed max depth ${MAX_DEPTH}`);
   }
-  if (facts && typeof facts === 'object' && !Array.isArray(facts)) {
-    for (const v of Object.values(facts)) {
+  if (facts && typeof facts === 'object') {
+    const iter = Array.isArray(facts) ? facts : Object.values(facts as Record<string, unknown>);
+    for (const v of iter) {
       if (v && typeof v === 'object') {
         checkSizeAndDepth(v, depth + 1);
       }
@@ -59,67 +62,95 @@ function checkSizeAndDepth(facts: unknown, depth = 0): void {
 
 function requireFields(facts: Record<string, unknown>, required: string[], type: string): void {
   for (const field of required) {
-    if (!(field in facts)) {
-      throw new SchemaValidationError(`${type}@1 missing required field: ${field}`);
+    if (!(field in facts) || facts[field] === undefined || facts[field] === null) {
+      throw new SchemaValidationError(`${type}@1 missing or null required field: ${field}`);
     }
   }
 }
 
 function requireString(facts: Record<string, unknown>, field: string, type: string): void {
   const v = facts[field];
-  if (v !== undefined && v !== null && typeof v !== 'string') {
+  if (v === undefined || v === null) {
+    throw new SchemaValidationError(`${type}@1.${field} is required and must be a non-null string`);
+  }
+  if (typeof v !== 'string') {
     throw new SchemaValidationError(`${type}@1.${field} must be a string, got ${typeof v}`);
   }
 }
 
 function requireNumber(facts: Record<string, unknown>, field: string, type: string): void {
   const v = facts[field];
-  if (v !== undefined && v !== null && typeof v !== 'number') {
+  if (v === undefined || v === null) {
+    throw new SchemaValidationError(`${type}@1.${field} is required and must be a non-null number`);
+  }
+  if (typeof v !== 'number') {
     throw new SchemaValidationError(`${type}@1.${field} must be a number, got ${typeof v}`);
   }
 }
 
+function rejectExtraProperties(
+  facts: Record<string, unknown>,
+  allowed: Set<string>,
+  type: string,
+): void {
+  for (const key of Object.keys(facts)) {
+    if (!allowed.has(key)) {
+      throw new SchemaValidationError(
+        `${type}@1: unknown property "${key}" (additionalProperties: false)`,
+      );
+    }
+  }
+}
+
+const TS_FIELDS = new Set(['start', 'end', 'success_count', 'failure_count', 'dispute_count']);
 function validateTransactionSummary(facts: Record<string, unknown>): void {
-  const required = ['start', 'end', 'success_count', 'failure_count', 'dispute_count'];
-  requireFields(facts, required, 'transaction_summary');
+  requireFields(facts, [...TS_FIELDS], 'transaction_summary');
   requireString(facts, 'start', 'transaction_summary');
   requireString(facts, 'end', 'transaction_summary');
   requireNumber(facts, 'success_count', 'transaction_summary');
   requireNumber(facts, 'failure_count', 'transaction_summary');
   requireNumber(facts, 'dispute_count', 'transaction_summary');
+  rejectExtraProperties(facts, TS_FIELDS, 'transaction_summary');
 }
 
+const KYB_FIELDS = new Set(['status', 'verifier', 'jurisdiction', 'verification_timestamp', 'expiry_timestamp']);
 function validateKyb(facts: Record<string, unknown>): void {
-  const required = ['status', 'verifier', 'jurisdiction', 'verification_timestamp', 'expiry_timestamp'];
-  requireFields(facts, required, 'kyb');
-  for (const f of required) requireString(facts, f, 'kyb');
+  requireFields(facts, [...KYB_FIELDS], 'kyb');
+  for (const f of KYB_FIELDS) requireString(facts, f, 'kyb');
+  rejectExtraProperties(facts, KYB_FIELDS, 'kyb');
 }
 
+const AUDIT_FIELDS = new Set(['standard', 'result', 'auditor', 'report_digest', 'audit_timestamp']);
 function validateSecurityAudit(facts: Record<string, unknown>): void {
-  const required = ['standard', 'result', 'auditor', 'report_digest', 'audit_timestamp'];
-  requireFields(facts, required, 'security_audit');
-  for (const f of required) requireString(facts, f, 'security_audit');
+  requireFields(facts, [...AUDIT_FIELDS], 'security_audit');
+  for (const f of AUDIT_FIELDS) requireString(facts, f, 'security_audit');
+  rejectExtraProperties(facts, AUDIT_FIELDS, 'security_audit');
 }
 
+const INCIDENT_FIELDS = new Set(['category', 'severity', 'occurrence_timestamp', 'evidence_digest']);
 function validateNegativeIncident(facts: Record<string, unknown>): void {
-  const required = ['category', 'severity', 'occurrence_timestamp', 'evidence_digest'];
-  requireFields(facts, required, 'negative_incident');
-  for (const f of required) requireString(facts, f, 'negative_incident');
+  requireFields(facts, [...INCIDENT_FIELDS], 'negative_incident');
+  for (const f of INCIDENT_FIELDS) requireString(facts, f, 'negative_incident');
+  rejectExtraProperties(facts, INCIDENT_FIELDS, 'negative_incident');
 }
 
 function validateBehavioralV1(facts: Record<string, unknown>): void {
   if (Object.keys(facts).length === 0) {
     throw new SchemaValidationError('behavioral@1: facts must contain at least one key');
   }
-  if (!('observation_ts' in facts)) {
-    throw new SchemaValidationError('behavioral@1: missing required field: observation_ts');
-  }
   requireString(facts, 'observation_ts', 'behavioral');
+  // behavioral@1 allows a bounded nested "data" object (max 4KB, depth 4)
+  // plus primitive top-level fields. No additionalProperties restriction
+  // on behavioral since issuer-defined data is freeform per spec §6.4.
   for (const [key, value] of Object.entries(facts)) {
     if (key === 'observation_ts') continue;
+    if (key === 'data' && value && typeof value === 'object' && !Array.isArray(value)) {
+      // Nested data object — size/depth already checked by checkSizeAndDepth
+      continue;
+    }
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       throw new SchemaValidationError(
-        `behavioral@1.${key} must be a primitive (string|number|boolean), got ${typeof value}`,
+        `behavioral@1.${key} must be a primitive or a "data" object, got ${typeof value}`,
       );
     }
   }
