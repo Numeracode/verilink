@@ -28,12 +28,15 @@ router.get('/', requireScope('attest:read'), defineHandler({
     offset: { type: 'number', min: 0 },
   },
   async handler(req, res) {
+    const tenantIds = req.user?.tenantIds || (req.user?.tenantId ? [req.user.tenantId] : []);
+    const roles = req.user?.roles || [];
+    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
     const result = await attestationService.listAttestations({
       issuerId: req.query.issuer_id as string,
       subjectId: req.query.subject_id as string,
       limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
       offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
-      callerTenantIds: req.user?.tenantIds || (req.user?.tenantId ? [req.user.tenantId] : []),
+      callerTenantIds,
       isStaff: req.user?.isStaff || false,
     });
     ok(res, result);
