@@ -1,5 +1,5 @@
 // control-plane/src/domains/attestation/attestationService.ts
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as attestationRepo from './attestationRepository.js';
 import * as principalRepo from '../principal/principalRepository.js';
 import { preParseJWS } from './jws.js';
@@ -81,15 +81,22 @@ export async function submitAttestation(opts: {
 
   // 5. Schema validation — resolve schema_version
   let schemaVersion = vp.schemaVersion;
+  let isLegacy = false;
   if (!schemaVersion) {
     // Version absent: only allowlisted legacy issuers get v0 default
     const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
       .split(',').map((s) => s.trim()).filter(Boolean);
     if (allowlist.includes(verifiedIssuerId)) {
       schemaVersion = '0';
+      isLegacy = true;
     } else {
       throw new AppError(CODES.BAD_REQUEST, 'schema_version is required for native issuers');
     }
+  }
+
+  // Native v1 requires kid; legacy v0 may omit it
+  if (!kid && !isLegacy) {
+    throw new AppError(CODES.BAD_REQUEST, 'kid is required for native v1 attestations');
   }
 
   try {
@@ -118,15 +125,36 @@ export async function submitAttestation(opts: {
     throw new AppError(CODES.BAD_REQUEST, 'non-negative_incident must have non-negative trust_delta');
   }
 
+  // 7b. Validate visibility
+  const visibility = vp.visibility || 'participants';
+  if (visibility !== 'participants' && visibility !== 'public') {
+    throw new AppError(CODES.BAD_REQUEST, `visibility must be 'participants' or 'public', got '${visibility}'`);
+  }
+
   // 8. Compute token_digest
   const tokenDigest = sha256hex(jwsToken);
   const facts = JSON.parse(vp.factsJson);
   const factsHash = computeFactsHash(facts);
 
-  // 9. Lazy subject creation (before transaction — idempotent)
-  let subject = await principalRepo.getPrincipal(verifiedSubjectId);
-  if (!subject) {
-    await principalRepo.createPrincipal(verifiedSubjectId, 'agent');
+  // 9. Lazy subject creation — map legacy DIDs to vrl:p:<uuid>
+  let subjectId = verifiedSubjectId;
+  let subjectMetadata: Record<string, unknown> | undefined;
+  if (!subjectId.startsWith('vrl:p:')) {
+    // Legacy subject (e.g. did:key:..., fingerprint hash): create native principal
+    const existing = await principalRepo.getPrincipal(subjectId);
+    if (existing) {
+      subjectId = existing.id;
+    } else {
+      // Check if we already mapped this legacy DID
+      subjectId = `vrl:p:${randomUUID()}`;
+      subjectMetadata = { legacy_did: verifiedSubjectId };
+      await principalRepo.createPrincipal(subjectId, 'agent', undefined, undefined, subjectMetadata);
+    }
+  } else {
+    let subject = await principalRepo.getPrincipal(subjectId);
+    if (!subject) {
+      await principalRepo.createPrincipal(subjectId, 'agent');
+    }
   }
 
   // 10. Store attestation transactionally with concurrency-safe dedup + observation_id pairing
@@ -138,10 +166,10 @@ export async function submitAttestation(opts: {
         throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
       }
 
-      // observation_id pairing invariants (with row-level lock on peer)
+      // observation_id pairing invariants (with advisory lock on peer)
       if (vp.observationId) {
         const peer = await attestationRepo.findObservationPeer(
-          verifiedIssuerId, verifiedSubjectId, vp.observationId, client
+          verifiedIssuerId, subjectId, vp.observationId, client
         );
         if (peer) {
           if (peer.attestation_type !== vp.attestationType) {
@@ -161,13 +189,13 @@ export async function submitAttestation(opts: {
 
       return await attestationRepo.createAttestation({
         issuerId: verifiedIssuerId,
-        subjectId: verifiedSubjectId,
+        subjectId: subjectId,
         jwsToken,
         tokenDigest,
-        payload: { type: vp.attestationType, facts, trust_level_delta: vp.trustLevelDelta, schema_version: vp.schemaVersion, visibility: vp.visibility, observation_id: vp.observationId },
+        payload: { type: vp.attestationType, facts, trust_level_delta: vp.trustLevelDelta, schema_version: schemaVersion, visibility: vp.visibility, observation_id: vp.observationId },
         facts,
         factsHash,
-        visibility: vp.visibility || 'participants',
+        visibility: visibility,
         trustDelta: vp.trustLevelDelta,
         attestationType: vp.attestationType,
         schemaVersion: schemaVersion,

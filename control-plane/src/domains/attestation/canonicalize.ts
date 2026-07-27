@@ -1,18 +1,27 @@
 // control-plane/src/domains/attestation/canonicalize.ts
 // RFC 8785 JSON Canonicalization Scheme (JCS)
 // Sorts object properties by UTF-16 code unit order (not locale-dependent).
+// Serializes sorted entries directly to avoid JS engine integer-key reordering.
 
 import { createHash } from 'node:crypto';
 
 export function canonicalize(obj: unknown): string {
-  return JSON.stringify(canonicalizeValue(obj));
+  return canonicalizeValue(obj);
 }
 
-function canonicalizeValue(value: unknown): unknown {
-  if (value === null) return null;
-  if (Array.isArray(value)) return value.map(canonicalizeValue);
+function canonicalizeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return canonicalizeNumber(value);
+  if (typeof value === 'string') return canonicalizeString(value);
+  if (Array.isArray(value)) {
+    const items = value.map((v) => canonicalizeValue(v));
+    return '[' + items.join(',') + ']';
+  }
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
       .sort(([a], [b]) => {
         const aLen = a.length;
         const bLen = b.length;
@@ -24,13 +33,21 @@ function canonicalizeValue(value: unknown): unknown {
         }
         return aLen - bLen;
       });
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of entries) {
-      if (v !== undefined) result[k] = canonicalizeValue(v);
-    }
-    return result;
+    const pairs = entries.map(([k, v]) => canonicalizeString(k) + ':' + canonicalizeValue(v));
+    return '{' + pairs.join(',') + '}';
   }
-  return value;
+  return canonicalizeString(String(value));
+}
+
+function canonicalizeString(s: string): string {
+  return JSON.stringify(s);
+}
+
+function canonicalizeNumber(n: number): string {
+  if (!Number.isFinite(n)) return 'null';
+  // RFC 8785: integers without decimal point, floats with shortest representation
+  if (Number.isInteger(n)) return String(n);
+  return String(n);
 }
 
 export function computeFactsHash(facts: unknown): string {

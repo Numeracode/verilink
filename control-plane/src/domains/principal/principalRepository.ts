@@ -28,17 +28,17 @@ export async function createPrincipal(
   id: string,
   entityKind: string,
   ownerTenantId?: string,
-  name?: string
+  name?: string,
+  metadata?: Record<string, unknown>,
 ): Promise<Principal> {
   const { rows } = await pool.query(
-    `INSERT INTO principals (id, entity_kind, owner_tenant_id, name)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO principals (id, entity_kind, owner_tenant_id, name, metadata)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (id) DO NOTHING
      RETURNING *`,
-    [id, entityKind, ownerTenantId || null, name || null]
+    [id, entityKind, ownerTenantId || null, name || null, JSON.stringify(metadata ?? {})]
   );
   if (rows.length === 0) {
-    // Already existed — fetch it
     return (await getPrincipal(id))!;
   }
   return rows[0];
