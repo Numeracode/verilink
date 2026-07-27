@@ -72,6 +72,20 @@ export async function findByTokenDigest(digest: string): Promise<Attestation | n
   return rows[0] || null;
 }
 
+export async function findObservationPeer(
+  issuerId: string,
+  subjectId: string,
+  observationId: string
+): Promise<Attestation | null> {
+  const { rows } = await pool.query(
+    `SELECT * FROM attestations
+     WHERE issuer_id = $1 AND subject_id = $2 AND observation_id = $3
+     LIMIT 1`,
+    [issuerId, subjectId, observationId]
+  );
+  return rows[0] || null;
+}
+
 export async function listAttestations(opts: {
   issuerId?: string;
   subjectId?: string;

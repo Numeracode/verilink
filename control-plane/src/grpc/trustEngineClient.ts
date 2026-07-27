@@ -135,13 +135,23 @@ export async function verifyAttestation(
     }
     if (!ok) continue;
 
-    return {
+    const result: VerifyResult = {
       valid: true,
       verifiedKeyId: candidate.keyId,
       issuerId,
       subjectId,
       payload: toPayload(payload),
     };
+
+    // Expiration check: reject expired tokens
+    if (result.payload!.expiresAtUnix > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      if (now > result.payload!.expiresAtUnix) {
+        return { valid: false, error: `token expired at ${result.payload!.expiresAtUnix}` };
+      }
+    }
+
+    return result;
   }
 
   return { valid: false, error: 'no candidate key verified the token' };

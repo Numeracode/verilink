@@ -156,6 +156,23 @@ describe('verifyAttestation', () => {
     assert.equal(result.valid, false);
     assert.match(result.error ?? '', /unsupported alg/);
   });
+
+  test('expired token is rejected', async () => {
+    const { privateKey, publicKeyRaw } = makeKey();
+    const token = signJws({
+      privateKey,
+      payload: {
+        ...samplePayload,
+        exp: Math.floor(Date.now() / 1000) - 3600,
+      },
+    });
+    const candidates: KeyCandidate[] = [{ keyId: 'k1', publicKeyRaw }];
+
+    const result = await verifyAttestation(token, candidates);
+
+    assert.equal(result.valid, false);
+    assert.match(result.error ?? '', /expired/);
+  });
 });
 
 function base64urlDecode(input: string): Buffer {

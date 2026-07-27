@@ -93,7 +93,7 @@ export async function submitAttestation(opts: {
 
   // 5. Schema validation
   try {
-    validateSchema(vp.attestationType, vp.schemaVersion, JSON.parse(vp.factsJson));
+    validateSchema(vp.attestationType, vp.schemaVersion, JSON.parse(vp.factsJson), verifiedIssuerId);
   } catch (err: any) {
     if (err instanceof SchemaValidationError) {
       throw new AppError(CODES.BAD_REQUEST, `schema validation failed: ${err.message}`);
@@ -120,6 +120,25 @@ export async function submitAttestation(opts: {
   const existing = await attestationRepo.findByTokenDigest(tokenDigest);
   if (existing) {
     throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');
+  }
+
+  // 8b. observation_id pairing invariants
+  if (vp.observationId) {
+    const peer = await attestationRepo.findObservationPeer(verifiedIssuerId, verifiedSubjectId, vp.observationId);
+    if (peer) {
+      if (peer.attestation_type !== vp.attestationType) {
+        throw new AppError(
+          CODES.BAD_REQUEST,
+          `observation_id pairing mismatch: attestation_type ${vp.attestationType} conflicts with existing ${peer.attestation_type}`
+        );
+      }
+      if (peer.trust_delta !== vp.trustLevelDelta) {
+        throw new AppError(
+          CODES.BAD_REQUEST,
+          `observation_id pairing mismatch: trust_delta ${vp.trustLevelDelta} conflicts with existing ${peer.trust_delta}`
+        );
+      }
+    }
   }
 
   // 9. Lazy subject creation
