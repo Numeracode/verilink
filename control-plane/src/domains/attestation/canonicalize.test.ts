@@ -57,4 +57,25 @@ describe('RFC 8785 JCS canonicalize (production code)', () => {
   it('mixed integer and string keys follow UTF-16 order', () => {
     assert.strictEqual(canonicalize({ '1': 'a', b: 'c', '10': 'd' }), '{"1":"a","10":"d","b":"c"}');
   });
+
+  it('rejects lone high surrogate (RFC 8785)', () => {
+    const loneHigh = String.fromCharCode(0xd800);
+    assert.throws(
+      () => canonicalize({ s: loneHigh }),
+      /lone high surrogate/,
+    );
+  });
+
+  it('rejects lone low surrogate (RFC 8785)', () => {
+    const loneLow = String.fromCharCode(0xdc00);
+    assert.throws(
+      () => canonicalize({ s: loneLow }),
+      /lone low surrogate/,
+    );
+  });
+
+  it('accepts valid surrogate pairs (emoji)', () => {
+    // 😀 is U+1F600 → surrogate pair \ud83d\ude00
+    assert.doesNotThrow(() => canonicalize({ s: '😀' }));
+  });
 });

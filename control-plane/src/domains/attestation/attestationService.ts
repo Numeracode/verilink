@@ -1,5 +1,5 @@
 // control-plane/src/domains/attestation/attestationService.ts
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import * as attestationRepo from './attestationRepository.js';
 import * as principalRepo from '../principal/principalRepository.js';
 import { preParseJWS } from './jws.js';
@@ -81,18 +81,20 @@ export async function submitAttestation(opts: {
 
   // 5. Schema validation — resolve schema_version
   let schemaVersion = vp.schemaVersion;
-  let isLegacy = false;
+  const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  const isAllowlistedIssuer = allowlist.includes(verifiedIssuerId);
+
   if (!schemaVersion) {
-    // Version absent: only allowlisted legacy issuers get v0 default
-    const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
-      .split(',').map((s) => s.trim()).filter(Boolean);
-    if (allowlist.includes(verifiedIssuerId)) {
+    if (isAllowlistedIssuer) {
       schemaVersion = '0';
-      isLegacy = true;
     } else {
       throw new AppError(CODES.BAD_REQUEST, 'schema_version is required for native issuers');
     }
   }
+
+  // Legacy v0 = allowlisted issuer + schema version "0"
+  const isLegacy = isAllowlistedIssuer && schemaVersion === '0';
 
   // Native v1 requires kid; legacy v0 may omit it
   if (!kid && !isLegacy) {
@@ -125,8 +127,9 @@ export async function submitAttestation(opts: {
     throw new AppError(CODES.BAD_REQUEST, 'non-negative_incident must have non-negative trust_delta');
   }
 
-  // 7b. Validate visibility
-  const visibility = vp.visibility || 'participants';
+  // 7b. Validate visibility — toPayload() already defaults nullish to 'participants',
+  // so any other value (including explicit "") must be validated.
+  const visibility = vp.visibility;
   if (visibility !== 'participants' && visibility !== 'public') {
     throw new AppError(CODES.BAD_REQUEST, `visibility must be 'participants' or 'public', got '${visibility}'`);
   }
@@ -138,20 +141,13 @@ export async function submitAttestation(opts: {
 
   // 9. Lazy subject creation — map legacy DIDs to vrl:p:<uuid>
   let subjectId = verifiedSubjectId;
-  let subjectMetadata: Record<string, unknown> | undefined;
   if (!subjectId.startsWith('vrl:p:')) {
-    // Legacy subject (e.g. did:key:..., fingerprint hash): create native principal
-    const existing = await principalRepo.getPrincipal(subjectId);
-    if (existing) {
-      subjectId = existing.id;
-    } else {
-      // Check if we already mapped this legacy DID
-      subjectId = `vrl:p:${randomUUID()}`;
-      subjectMetadata = { legacy_did: verifiedSubjectId };
-      await principalRepo.createPrincipal(subjectId, 'agent', undefined, undefined, subjectMetadata);
-    }
+    // Legacy subject (e.g. did:key:..., fingerprint hash): find or create
+    // a native principal with metadata.legacy_did mapping
+    const principal = await principalRepo.findOrCreateByLegacyDID(verifiedSubjectId);
+    subjectId = principal.id;
   } else {
-    let subject = await principalRepo.getPrincipal(subjectId);
+    const subject = await principalRepo.getPrincipal(subjectId);
     if (!subject) {
       await principalRepo.createPrincipal(subjectId, 'agent');
     }
@@ -192,7 +188,7 @@ export async function submitAttestation(opts: {
         subjectId: subjectId,
         jwsToken,
         tokenDigest,
-        payload: { type: vp.attestationType, facts, trust_level_delta: vp.trustLevelDelta, schema_version: schemaVersion, visibility: vp.visibility, observation_id: vp.observationId },
+        payload: { type: vp.attestationType, facts, trust_level_delta: vp.trustLevelDelta, schema_version: schemaVersion, visibility: visibility, observation_id: vp.observationId },
         facts,
         factsHash,
         visibility: visibility,

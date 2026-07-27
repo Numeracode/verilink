@@ -40,6 +40,19 @@ function canonicalizeValue(value: unknown): string {
 }
 
 function canonicalizeString(s: string): string {
+  // RFC 8785 / I-JSON: reject lone surrogates
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      // High surrogate — must be followed by a low surrogate
+      if (i + 1 >= s.length || s.charCodeAt(i + 1) < 0xdc00 || s.charCodeAt(i + 1) > 0xdfff) {
+        throw new Error('JCS: lone high surrogate in string (RFC 8785 violation)');
+      }
+      i++; // skip the low surrogate
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new Error('JCS: lone low surrogate in string (RFC 8785 violation)');
+    }
+  }
   return JSON.stringify(s);
 }
 
