@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/messagesgoel-blip/verilink/pkg/fingerprint"
+	"github.com/messagesgoel-blip/verilink/pkg/requestsigin"
 	"github.com/messagesgoel-blip/verilink/pkg/verifier"
 )
 
@@ -39,7 +41,11 @@ func BenchmarkEdgeVerifierDecision(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	proxy, err := NewEdgeVerifierProxy(backend.URL, ts)
+	registry := requestsigin.NewAgentRegistry()
+	nonceCache := requestsigin.NewNonceCache(5 * time.Minute)
+	defer nonceCache.Stop()
+
+	proxy, err := NewEdgeVerifierProxy(backend.URL, ts, registry, nonceCache, false, "")
 	if err != nil {
 		b.Fatal(err)
 	}
