@@ -78,4 +78,13 @@ describe('RFC 8785 JCS canonicalize (production code)', () => {
     // 😀 is U+1F600 → surrogate pair \ud83d\ude00
     assert.doesNotThrow(() => canonicalize({ s: '😀' }));
   });
+
+  it('non-BMP keys sorted by UTF-16 code unit order', () => {
+    // Emoji key (surrogate pair \ud83d\ude00) has charCode 0xd83d at index 0
+    // which is after ASCII but before lowercase letters start at 0x61
+    const emoji = '😀';
+    const result = canonicalize({ [emoji]: 1, A: 2, z: 3 });
+    // A (0x41) < z (0x7a) < 😀 (0xd83d...)
+    assert.strictEqual(result, '{"A":2,"z":3,"\ud83d\ude00":1}');
+  });
 });

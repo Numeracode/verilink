@@ -5,6 +5,7 @@ import * as principalRepo from '../principal/principalRepository.js';
 import { preParseJWS } from './jws.js';
 import { validateSchema, SchemaValidationError, SchemaValidationExpiredError } from './schemaValidator.js';
 import { canonicalize, computeFactsHash } from './canonicalize.js';
+import { isV0AllowedForIssuer } from './legacyConfig.js';
 import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClient.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
@@ -51,7 +52,7 @@ export async function submitAttestation(opts: {
   // 3. Resolve candidate keys
   let candidateKeys: principalRepo.PrincipalKey[];
   if (kid) {
-    const key = await principalRepo.getKeyByKid(issuerId, kid);
+    const key = await principalRepo.getKeyByKid(issuerId, kid, iat);
     if (!key) {
       throw new AppError(CODES.BAD_REQUEST, `unknown key id: ${kid} for issuer ${issuerId}`);
     }
@@ -81,9 +82,7 @@ export async function submitAttestation(opts: {
 
   // 5. Schema validation — resolve schema_version
   let schemaVersion = vp.schemaVersion;
-  const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
-  const isAllowlistedIssuer = allowlist.includes(verifiedIssuerId);
+  const isAllowlistedIssuer = isV0AllowedForIssuer(verifiedIssuerId);
 
   if (!schemaVersion) {
     if (isAllowlistedIssuer) {
@@ -136,7 +135,12 @@ export async function submitAttestation(opts: {
 
   // 8. Compute token_digest and facts_hash
   const tokenDigest = sha256hex(jwsToken);
-  const facts = JSON.parse(vp.factsJson);
+  let facts: Record<string, unknown>;
+  try {
+    facts = JSON.parse(vp.factsJson);
+  } catch (err: any) {
+    throw new AppError(CODES.BAD_REQUEST, `facts are not valid JSON: ${err.message}`);
+  }
   let factsHash: string;
   try {
     factsHash = computeFactsHash(facts);
@@ -169,7 +173,7 @@ export async function submitAttestation(opts: {
   // 10. Store attestation transactionally with concurrency-safe dedup + observation_id pairing
   try {
     return await withTransaction(async (client) => {
-      // Dedup check inside transaction with lock
+      // Dedup check inside transaction
       const existing = await attestationRepo.findByTokenDigest(tokenDigest, client);
       if (existing) {
         throw new AppError(CODES.CONFLICT, 'attestation already submitted (duplicate token)');

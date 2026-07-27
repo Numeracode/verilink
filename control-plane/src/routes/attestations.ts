@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ok, created } from '../shared/http/responses.js';
 import { defineHandler } from '../shared/http/defineHandler.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { AppError, CODES } from '../shared/errors/AppError.js';
 import * as attestationService from '../domains/attestation/attestationService.js';
 
 const router = Router();
@@ -11,10 +12,7 @@ router.post('/submit', defineHandler({
   async handler(req, res) {
     const { token } = req.body;
     if (!token || typeof token !== 'string') {
-      throw new (await import('../shared/errors/AppError.js')).AppError(
-        (await import('../shared/errors/AppError.js')).CODES.BAD_REQUEST,
-        'Missing required field: token'
-      );
+      throw new AppError(CODES.BAD_REQUEST, 'Missing required field: token');
     }
     const att = await attestationService.submitAttestation({ jwsToken: token });
     created(res, att);

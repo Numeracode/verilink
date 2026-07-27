@@ -83,7 +83,7 @@ export async function findObservationPeer(
   // concurrent first-submissions for the same observation pair.
   if (client) {
     const lockKey = hashToLockKey(`${issuerId}:${subjectId}:${observationId}`);
-    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey]);
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', [lockKey.hi, lockKey.lo]);
   }
   const q = `SELECT * FROM attestations
      WHERE issuer_id = $1 AND subject_id = $2 AND observation_id = $3
@@ -94,9 +94,14 @@ export async function findObservationPeer(
   return rows[0] || null;
 }
 
-function hashToLockKey(s: string): bigint {
+function hashToLockKey(s: string): { hi: number; lo: number } {
   const hash = createHash('sha256').update(s).digest();
-  return hash.readBigInt64BE(0);
+  // Split into two 32-bit ints for pg_advisory_xact_lock(hi, lo)
+  // which takes two int4 args, avoiding bigint parameter issues
+  return {
+    hi: hash.readInt32BE(0),
+    lo: hash.readInt32BE(4),
+  };
 }
 
 export async function listAttestations(opts: {

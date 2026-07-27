@@ -69,26 +69,40 @@ function ed25519PublicKey(raw: Buffer): crypto.KeyObject {
 }
 
 function toPayload(jwsPayload: Record<string, unknown>): VerifyPayload {
-  // VeriLink attestations nest behavioral claims under "vli" (per
-  // pkg/attestation.AttestationClaims). Fall back to top-level for
-  // non-conformant legacy tokens.
   const hasVli = jwsPayload.vli && typeof jwsPayload.vli === 'object';
   const vli = hasVli
     ? jwsPayload.vli as Record<string, unknown>
     : jwsPayload;
 
-  // schema_version: preserve absent version as empty string. Ingest
-  // decides: allowlisted legacy issuer → "0", native issuer → reject
-  // (v1 requires explicit schema_version).
   const explicitVersion = vli.schema_version ?? vli.schemaVersion;
   const schemaVersion = explicitVersion != null ? String(explicitVersion) : '';
 
+  // Safe number coercion: reject NaN
+  const trustDelta = Number(vli.trust_level_delta ?? vli.trustLevelDelta ?? 0);
+  if (Number.isNaN(trustDelta)) {
+    throw new Error('trust_level_delta is not a valid number');
+  }
+
+  // Safe facts serialization: validate it's an object, not a pre-serialized string
+  let factsJson: string;
+  const rawFacts = vli.facts ?? {};
+  if (typeof rawFacts === 'string') {
+    // Validate it's parseable JSON, then re-serialize for consistency
+    try {
+      factsJson = JSON.stringify(JSON.parse(rawFacts));
+    } catch {
+      throw new Error('facts string is not valid JSON');
+    }
+  } else if (rawFacts && typeof rawFacts === 'object') {
+    factsJson = JSON.stringify(rawFacts);
+  } else {
+    factsJson = '{}';
+  }
+
   return {
     attestationType: String(vli.type ?? vli.attestation_type ?? ''),
-    factsJson: typeof vli.facts === 'string'
-      ? vli.facts
-      : JSON.stringify(vli.facts ?? {}),
-    trustLevelDelta: Number(vli.trust_level_delta ?? vli.trustLevelDelta ?? 0),
+    factsJson,
+    trustLevelDelta: trustDelta,
     issuedAtUnix: Number(jwsPayload.iat ?? 0),
     expiresAtUnix: Number(jwsPayload.exp ?? 0),
     jti: String(jwsPayload.jti ?? ''),
@@ -124,6 +138,13 @@ export async function verifyAttestation(
   const payload = jws.payload;
   const issuerId = String(payload.iss ?? '');
   const subjectId = String(payload.sub ?? '');
+
+  if (!issuerId) {
+    return { valid: false, error: 'JWS missing iss claim' };
+  }
+  if (!subjectId) {
+    return { valid: false, error: 'JWS missing sub claim' };
+  }
 
   for (const candidate of candidateKeys) {
     if (!candidate.publicKeyRaw || candidate.publicKeyRaw.length !== 32) {

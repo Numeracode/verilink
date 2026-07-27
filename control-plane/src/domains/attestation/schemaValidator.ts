@@ -12,20 +12,7 @@ export class SchemaValidationExpiredError extends SchemaValidationError {
   }
 }
 
-function isV0AllowedForIssuer(issuerId: string): boolean {
-  const allowlist = (process.env.BEHAVIORAL_V0_ALLOWLIST || '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
-  if (allowlist.length === 0) return false;
-  return allowlist.includes(issuerId);
-}
-
-function isV0CutoffPassed(): boolean {
-  const cutoff = process.env.BEHAVIORAL_V0_CUTOFF;
-  if (!cutoff) return true;
-  const cutoffTime = new Date(cutoff).getTime();
-  if (Number.isNaN(cutoffTime)) return true;
-  return Date.now() > cutoffTime;
-}
+import { isV0AllowedForIssuer, isV0CutoffPassed } from './legacyConfig.js';
 
 const SUPPORTED_TYPES = new Set([
   'behavioral',

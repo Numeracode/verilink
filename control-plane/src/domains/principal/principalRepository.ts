@@ -201,7 +201,21 @@ export async function getIssuer(principalId: string): Promise<Issuer | null> {
   return rows[0] || null;
 }
 
-export async function getKeyByKid(principalId: string, keyId: string): Promise<PrincipalKey | null> {
+export async function getKeyByKid(
+  principalId: string,
+  keyId: string,
+  iat?: Date,
+): Promise<PrincipalKey | null> {
+  if (iat) {
+    const { rows } = await pool.query(
+      `SELECT * FROM principal_keys
+       WHERE principal_id = $1 AND key_id = $2 AND revoked_at IS NULL
+         AND valid_from <= $3
+         AND (valid_until IS NULL OR valid_until >= $3)`,
+      [principalId, keyId, iat]
+    );
+    return rows[0] || null;
+  }
   const { rows } = await pool.query(
     `SELECT * FROM principal_keys
      WHERE principal_id = $1 AND key_id = $2 AND revoked_at IS NULL`,
