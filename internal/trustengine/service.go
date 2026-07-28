@@ -266,11 +266,11 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			}, nil
 		}
 
-		factsJSON, err := json.Marshal(claims.VerilinkClaims.Facts)
-		if err != nil {
+		factsJSON, marshalErr := json.Marshal(claims.VerilinkClaims.Facts)
+		if marshalErr != nil {
 			return &trustpb.VerifyResult{
 				Valid: false,
-				Error: fmt.Sprintf("marshal facts: %v", err),
+				Error: fmt.Sprintf("marshal facts: %v", marshalErr),
 			}, nil
 		}
 
@@ -284,6 +284,14 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			jti = claims.ID
 		}
 
+		td, tdOK := checkedInt32(claims.VerilinkClaims.TrustLevelDelta)
+		if !tdOK {
+			return &trustpb.VerifyResult{
+				Valid: false,
+				Error: fmt.Sprintf("trust level delta out of int32 range: %d", claims.VerilinkClaims.TrustLevelDelta),
+			}, nil
+		}
+
 		return &trustpb.VerifyResult{
 			Valid:         true,
 			VerifiedKeyId: cand.KeyId,
@@ -292,7 +300,7 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			Payload: &trustpb.AttestationPayload{
 				AttestationType: claims.VerilinkClaims.Type,
 				FactsJson:       factsJSON,
-				TrustLevelDelta: mustInt32(claims.VerilinkClaims.TrustLevelDelta, "trust level delta"),
+				TrustLevelDelta: td,
 				IssuedAtUnix:    claims.IssuedAt.Time.Unix(),
 				ExpiresAtUnix:   expUnix,
 				Jti:             jti,
@@ -332,4 +340,15 @@ func mustInt32(v int, field string) int32 {
 		panic(fmt.Sprintf("%s out of int32 range: %d", field, v))
 	}
 	return int32(v)
+}
+
+func checkedInt32(v int) (int32, bool) {
+	const (
+		minInt32 = -1 << 31
+		maxInt32 = 1<<31 - 1
+	)
+	if v < minInt32 || v > maxInt32 {
+		return 0, false
+	}
+	return int32(v), true
 }

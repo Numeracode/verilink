@@ -1,11 +1,11 @@
 version: v1
 
 plugins:
-  - plugin: buf.build/protocolbuffers/go
+  - plugin: buf.build/protocolbuffers/go:v1.36.11
     out: ..
     opt:
       - module=github.com/messagesgoel-blip/verilink
-  - plugin: buf.build/grpc/go
+  - plugin: buf.build/grpc/go:v1.6.2
     out: ..
     opt:
       - module=github.com/messagesgoel-blip/verilink

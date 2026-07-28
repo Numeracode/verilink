@@ -16,7 +16,7 @@ import (
 func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Backend Success"))
+		_, _ = w.Write([]byte("Backend Success"))
 	}))
 	defer backend.Close()
 
@@ -60,7 +60,7 @@ func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 func TestEdgeVerifierProxy_UnsignedPassesWhenPermissive(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 
@@ -86,7 +86,7 @@ func TestEdgeVerifierProxy_UnsignedPassesWhenPermissive(t *testing.T) {
 func TestEdgeVerifierProxy_UnsignedRejectsWhenStrict(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 
@@ -112,7 +112,7 @@ func TestEdgeVerifierProxy_UnsignedRejectsWhenStrict(t *testing.T) {
 func TestEdgeVerifierProxy_InvalidSignature(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 

@@ -30,6 +30,27 @@ function assertSafeVerilinkTestDb(urlStr: string): void {
   const dbName = u.pathname.replace(/^\//, '');
   const dbOk = dbName === 'verilink_test';
 
+  // pg/libpq connection strings allow certain query-string keys (or URL params)
+  // to override parts of the effective connection target. For truncation safety,
+  // reject any target-overriding parameters explicitly.
+  const disallowedOverrideKeys = [
+    'host',
+    'database',
+    'dbname',
+    'port',
+    'user',
+    'password',
+  ] as const;
+
+  for (const key of disallowedOverrideKeys) {
+    if (u.searchParams.has(key)) {
+      assert.fail(
+        `Refusing to run VeriLink integration DB helpers against DATABASE_URL=${redactDatabaseUrl(urlStr)}. ` +
+          `Detected disallowed DATABASE_URL override parameter: ${key}`
+      );
+    }
+  }
+
   if (!hostOk || !dbOk) {
     assert.fail(
       `Refusing to run VeriLink integration DB helpers against DATABASE_URL=${redactDatabaseUrl(urlStr)}. ` +

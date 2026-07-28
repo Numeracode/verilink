@@ -1,10 +1,12 @@
 package testutil
 
 import (
+	"errors"
 	"log"
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -15,10 +17,12 @@ import (
 
 // TrustEngineHarness wraps a live gRPC TrustEngine for integration tests.
 type TrustEngineHarness struct {
-	Client trustpb.TrustEngineClient
-	grpc   *grpc.Server
-	conn   *grpc.ClientConn
-	once   sync.Once
+	Client    trustpb.TrustEngineClient
+	grpc      *grpc.Server
+	conn      *grpc.ClientConn
+	lis       net.Listener
+	serveDone chan struct{}
+	once      sync.Once
 }
 
 // Stop closes the client connection and stops the gRPC server.
@@ -29,6 +33,18 @@ func (h *TrustEngineHarness) Stop() {
 		}
 		if h.grpc != nil {
 			h.grpc.Stop()
+		}
+		if h.lis != nil {
+			_ = h.lis.Close()
+		}
+		// Ensure the Serve goroutine has exited before cleanup completes.
+		// This prevents intermittent panics/errors like "log in goroutine after test has completed".
+		if h.serveDone != nil {
+			select {
+			case <-h.serveDone:
+			case <-time.After(5 * time.Second):
+				// Best-effort: don't block tests indefinitely.
+			}
 		}
 	})
 }
@@ -44,9 +60,11 @@ func StartTrustEngine(t *testing.T) *TrustEngineHarness {
 	}
 
 	s, _ := trustengine.NewServer()
+	serveDone := make(chan struct{})
 
 	go func() {
-		if serveErr := s.Serve(lis); serveErr != nil {
+		defer close(serveDone)
+		if serveErr := s.Serve(lis); serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) {
 			// Don't call testing.T from a goroutine: cleanup may run after the
 			// test completes, causing "testing.T has already finished".
 			log.Printf("trust-engine server stopped: %v", serveErr)
@@ -59,13 +77,16 @@ func StartTrustEngine(t *testing.T) *TrustEngineHarness {
 	)
 	if err != nil {
 		s.Stop()
+		_ = lis.Close()
 		t.Fatalf("failed to connect: %v", err)
 	}
 
 	h := &TrustEngineHarness{
-		Client: trustpb.NewTrustEngineClient(conn),
-		grpc:   s,
-		conn:   conn,
+		Client:    trustpb.NewTrustEngineClient(conn),
+		grpc:      s,
+		conn:      conn,
+		lis:       lis,
+		serveDone: serveDone,
 	}
 	t.Cleanup(h.Stop)
 	return h

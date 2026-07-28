@@ -30,7 +30,7 @@ func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn,
 		t.Fatal(err)
 	}
 	grpcSrv, _ := trustengine.NewServer()
-	go grpcSrv.Serve(lis)
+	go func() { _ = grpcSrv.Serve(lis) }()
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -149,19 +149,25 @@ func TestServer_RunVeriRank_MissingPrincipalRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	// Send root but NO principal for it — should be rejected.
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Root{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Root{
 		Root: &trustpb.Root{Id: "vrl:p:root", Weight: 1.0},
-	}})
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Attestation{
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Attestation{
 		Attestation: &trustpb.Attestation{
 			IssuerId: "vrl:p:root", SubjectId: "vrl:p:a",
 			TrustDelta: 100, IssuedAtUnix: now.Unix(), AttestationType: "transaction_summary",
 		},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = stream.CloseAndRecv()
 	if err == nil {
@@ -179,9 +185,11 @@ func TestServer_RunVeriRank_DuplicateHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	if sendErr := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
 	}}); sendErr != nil {
@@ -199,15 +207,19 @@ func TestServer_RunVeriRank_NaNWeight(t *testing.T) {
 
 	now := time.Now()
 	stream, _ := client.RunVeriRank(context.Background())
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Principal{
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Principal{
 		Principal: &trustpb.Principal{
 			Id: "vrl:p:x", EntityKind: "agent",
 			TrustWeight: math.NaN(),
 		},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	_, err := stream.CloseAndRecv()
 	if err == nil {
 		t.Fatal("expected error for NaN weight, got nil")
