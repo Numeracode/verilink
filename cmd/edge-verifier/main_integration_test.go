@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/messagesgoel-blip/verilink/internal/edgeverifier"
 	"github.com/messagesgoel-blip/verilink/pkg/requestsigin"
 )
 
@@ -39,7 +40,7 @@ func TestFullSignedFlow(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	proxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
+	proxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
 
 	now := time.Now().Unix()
 	targetURI := backend.URL + "/api/resource"
@@ -93,7 +94,7 @@ func TestFullSignedFlow(t *testing.T) {
 	})
 
 	t.Run("strict mode rejects unsigned", func(t *testing.T) {
-		strictProxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, true, "")
+		strictProxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, true, "")
 		req, _ := http.NewRequest("GET", backend.URL+"/admin", nil)
 		rr := httptest.NewRecorder()
 		strictProxy.ServeHTTP(rr, req)
