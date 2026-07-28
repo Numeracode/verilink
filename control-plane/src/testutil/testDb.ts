@@ -2,12 +2,29 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import assert from 'node:assert';
 import pg from 'pg';
 
 const { Pool } = pg;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '../../migrations');
+
+function assertSafeVerilinkTestDb(urlStr: string): void {
+  // Safety: integration tests must not truncate arbitrary DBs.
+  // We only allow the dedicated local test DB: verilink_test on localhost.
+  const u = new URL(urlStr);
+  const hostOk = u.hostname === '127.0.0.1' || u.hostname === 'localhost';
+  const dbName = u.pathname.replace(/^\//, '');
+  const dbOk = dbName === 'verilink_test';
+
+  if (!hostOk || !dbOk) {
+    assert.fail(
+      `Refusing to run VeriLink integration DB helpers against DATABASE_URL=${urlStr}. ` +
+        `Expected host=127.0.0.1|localhost and db=verilink_test.`
+    );
+  }
+}
 
 /**
  * Connects to DATABASE_URL and applies control-plane migrations if needed.
@@ -19,6 +36,7 @@ export async function setupTestDb(): Promise<pg.Pool> {
   if (!url) {
     throw new Error('DATABASE_URL is required for control-plane integration tests');
   }
+  assertSafeVerilinkTestDb(url);
   if (!process.env.API_KEY_HMAC_SECRET) {
     process.env.API_KEY_HMAC_SECRET = 'test-hmac-secret-for-integration';
   }
@@ -74,6 +92,10 @@ export async function setupTestDb(): Promise<pg.Pool> {
 
 /** Truncate tenant-scoped / attestation tables between tests. */
 export async function resetTestData(pool: pg.Pool): Promise<void> {
+  const url = pool.options?.connectionString;
+  if (typeof url === 'string') {
+    assertSafeVerilinkTestDb(url);
+  }
   await pool.query(`
     TRUNCATE
       attestations,

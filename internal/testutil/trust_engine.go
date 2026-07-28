@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"log"
 	"net"
 	"sync"
 	"testing"
@@ -46,7 +47,9 @@ func StartTrustEngine(t *testing.T) *TrustEngineHarness {
 
 	go func() {
 		if err := s.Serve(lis); err != nil {
-			t.Logf("server stopped: %v", err)
+			// Don't call testing.T from a goroutine: cleanup may run after the
+			// test completes, causing "testing.T has already finished".
+			log.Printf("trust-engine server stopped: %v", err)
 		}
 	}()
 

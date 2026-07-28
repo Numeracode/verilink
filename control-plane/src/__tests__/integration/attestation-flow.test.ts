@@ -59,6 +59,19 @@ describe('Attestation Flow Integration', () => {
     });
     assert.equal(submitResp.status, 201, await submitResp.text());
 
+    // No-filter behavior: listing without query params should still succeed.
+    const listRespNoFilter = await fetch(`${harness.url}/v1/attestations`, {
+      headers: authHeaders(apiKey),
+    });
+    assert.equal(listRespNoFilter.status, 200);
+    const bodyNoFilter = (await listRespNoFilter.json()) as {
+      ok: boolean;
+      data: { items: unknown[]; total: number };
+    };
+    assert.equal(bodyNoFilter.ok, true);
+    assert.equal(bodyNoFilter.data.total, 1);
+    assert.equal(bodyNoFilter.data.items.length, 1);
+
     const listResp = await fetch(
       `${harness.url}/v1/attestations?issuer_id=${encodeURIComponent(issuer.id)}`,
       {
