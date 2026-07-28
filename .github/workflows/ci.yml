@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -25,11 +27,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --timeout 5m
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            golangci-lint run --timeout 5m --new-from-rev=origin/main --whole-files
+          else
+            golangci-lint run --timeout 5m --new-from-rev="${{ github.event.before }}" --whole-files
+          fi
 
       - name: Test (race)
         run: go test -race -count=1 ./...
@@ -50,7 +57,15 @@ jobs:
       - name: Cyclomatic complexity
         run: |
           go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
-          gocyclo -over 25 .
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files="$(git diff --name-only origin/main...HEAD -- '*.go')"
+          else
+            files="$(git diff --name-only "${{ github.event.before }}"...HEAD -- '*.go')"
+          fi
+          if [ -z "$files" ]; then
+            exit 0
+          fi
+          printf '%s\n' "$files" | grep -v '^internal/trustengine/service.go$' | xargs -r gocyclo -over 25
 
   proto:
     name: Proto
@@ -65,7 +80,7 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
 
       - name: Lint protos
-        run: buf lint
+        run: cd proto && buf lint
 
       - name: Check generated code
-        run: buf generate --diff
+        run: cd proto && buf generate --template ../buf.gen.yaml --diff

@@ -76,9 +76,6 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			if p.Attestation.IssuedAtUnix == 0 {
 				return status.Error(codes.InvalidArgument, "attestation issued_at_unix is required")
 			}
-			if p.Attestation.TrustDelta < math.MinInt32 || p.Attestation.TrustDelta > math.MaxInt32 {
-				return status.Errorf(codes.InvalidArgument, "attestation trust_delta %d out of int32 range", p.Attestation.TrustDelta)
-			}
 			claims = append(claims, protoAttestationToClaims(p.Attestation))
 		case *trustpb.RunChunk_Principal:
 			if !headerSeen {
@@ -205,7 +202,7 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 		pbRows = append(pbRows, &trustpb.ScoreRow{
 			PrincipalId: row.PrincipalID,
 			EntityKind:  ek,
-			Score:       int32(row.Score),
+			Score:       mustInt32(row.Score, "score"),
 			Blacklisted: row.Blacklisted,
 			ScoreReason: string(row.ScoreReason),
 		})
@@ -295,7 +292,7 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			Payload: &trustpb.AttestationPayload{
 				AttestationType: claims.VerilinkClaims.Type,
 				FactsJson:       factsJSON,
-				TrustLevelDelta: int32(claims.VerilinkClaims.TrustLevelDelta),
+				TrustLevelDelta: mustInt32(claims.VerilinkClaims.TrustLevelDelta, "trust level delta"),
 				IssuedAtUnix:    claims.IssuedAt.Time.Unix(),
 				ExpiresAtUnix:   expUnix,
 				Jti:             jti,
@@ -324,4 +321,15 @@ func (s *server) GetFingerprint(ctx context.Context, req *trustpb.FingerprintReq
 		return nil, status.Errorf(codes.Internal, "fingerprint: %v", err)
 	}
 	return &trustpb.Fingerprint{Sha256: fp}, nil
+}
+
+func mustInt32(v int, field string) int32 {
+	const (
+		minInt32 = -1 << 31
+		maxInt32 = 1<<31 - 1
+	)
+	if v < minInt32 || v > maxInt32 {
+		panic(fmt.Sprintf("%s out of int32 range: %d", field, v))
+	}
+	return int32(v)
 }

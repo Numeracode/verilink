@@ -46,10 +46,10 @@ func StartTrustEngine(t *testing.T) *TrustEngineHarness {
 	s, _ := trustengine.NewServer()
 
 	go func() {
-		if err := s.Serve(lis); err != nil {
+		if serveErr := s.Serve(lis); serveErr != nil {
 			// Don't call testing.T from a goroutine: cleanup may run after the
 			// test completes, causing "testing.T has already finished".
-			log.Printf("trust-engine server stopped: %v", err)
+			log.Printf("trust-engine server stopped: %v", serveErr)
 		}
 	}()
 

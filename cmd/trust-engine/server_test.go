@@ -182,10 +182,10 @@ func TestServer_RunVeriRank_DuplicateHeader(t *testing.T) {
 	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
 	}})
-	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if sendErr := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}}); err == nil {
-		// Some gRPC impls buffer; the error surfaces on CloseAndRecv.
+	}}); sendErr != nil {
+		t.Logf("duplicate header rejected on send: %v", sendErr)
 	}
 	_, err = stream.CloseAndRecv()
 	if err == nil {

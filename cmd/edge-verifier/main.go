@@ -36,15 +36,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to generate trusted fingerprint: %v", err)
 	}
-	if err := ts.SetTrustScore(trustedFP, 100); err != nil {
-		log.Fatalf("Failed to seed trusted fingerprint: %v", err)
+	if seedErr := ts.SetTrustScore(trustedFP, 100); seedErr != nil {
+		log.Fatalf("Failed to seed trusted fingerprint: %v", seedErr)
 	}
 	log.Printf("Pre-seeded trusted fingerprint: %s", trustedFP)
 
 	registry := requestsigin.NewAgentRegistry()
 	if agentKeysPath != "" {
-		if err := registry.LoadFromJSON(agentKeysPath); err != nil {
-			log.Fatalf("Failed to load agent keys: %v", err)
+		if loadErr := registry.LoadFromJSON(agentKeysPath); loadErr != nil {
+			log.Fatalf("Failed to load agent keys: %v", loadErr)
 		}
 		log.Printf("Loaded agent keys from %s", agentKeysPath)
 	}
@@ -53,11 +53,21 @@ func main() {
 	defer nonceCache.Stop()
 
 	mockBackend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Welcome, verified agent! You have reached the backend API.")
+		_, _ = fmt.Fprintf(w, "Welcome, verified agent! You have reached the backend API.")
 	})
+	backendServer := &http.Server{
+		Addr:              ":8081",
+		Handler:           mockBackend,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		log.Println("Starting mock backend on :8081")
-		http.ListenAndServe(":8081", mockBackend)
+		if serveErr := backendServer.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+			log.Printf("mock backend stopped: %v", serveErr)
+		}
 	}()
 
 	proxy, err := edgeverifier.NewEdgeVerifierProxy("http://localhost:8081", ts, registry, nonceCache, requireSignatures, externalBaseURL)
@@ -66,5 +76,13 @@ func main() {
 	}
 
 	log.Println("Verilink Edge Verifier running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", proxy))
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           proxy,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
