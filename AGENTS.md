@@ -31,13 +31,16 @@ VeriLink owns the Trust Protocol for the Agentic Economy: Non-Human Identity (NH
 
 ## Stack
 
-- Language: Go (Golang)
-- Core: `pkg/fingerprint`, `pkg/attestation`, `pkg/trust`
-- Services: 
-  - `cmd/edge-verifier`: High-performance allow/deny proxy (Port 8080)
-  - `cmd/attestation-service`: Behavioral report submission API (Port 8082)
-- Database: In-memory (MVP), Redis (Production edge cache)
-- Security: Ed25519 (EdDSA) signatures, JWS (JSON Web Signature)
+- Languages: Go (core + edge + trust-engine) and TypeScript (control plane)
+- Core Go: `pkg/fingerprint`, `pkg/attestation`, `pkg/trust`, `pkg/requestsigin`, `pkg/trustpb`
+- Packages: `internal/trustengine`, `internal/edgeverifier`, `internal/testutil`
+- Services:
+  - `cmd/edge-verifier`: RFC 9421 reverse proxy (Port 8080)
+  - `cmd/trust-engine`: gRPC trust APIs (default gRPC listen; see flags)
+  - `cmd/attestation-service`: Legacy/demo behavioral HTTP API (Port 8082)
+  - `control-plane/`: Express + Postgres control plane (attestations, principals, tenancy)
+- Database: Postgres for control plane (`verilink_test` for integration); Redis/score sync still productization backlog
+- Security: Ed25519, JWS attestations, RFC 9421 HTTP Message Signatures
 
 ## Branch And PR Policy
 
@@ -67,13 +70,15 @@ VeriLink owns the Trust Protocol for the Agentic Economy: Non-Human Identity (NH
 - `govulncheck ./...` — vulnerability scan
 
 ### CI (GitHub Actions, blocking)
-- `golangci-lint run --timeout 5m` — comprehensive linting
+- `golangci-lint run --timeout 5m` — comprehensive linting (PR-scoped via `--new-from-rev`)
 - `go test -race -count=1 ./...` — race condition detection
 - `go build ./...` — build verification
-- `buf lint && buf generate --diff` — proto validation
-- `gitleaks detect --source . --verbose` — secrets scan
+- Proto job: `buf lint` + generate + `goimports` + `git diff --exit-code` on `pkg/trustpb`
+- `gitleaks detect --source .` — secrets scan
 - `govulncheck ./...` — vulnerability scan
-- `gocyclo -over 25 .` — cyclomatic complexity
+- `gocyclo -over 25` — cyclomatic complexity (PR-scoped)
+- `go test -tags=integration -count=1 ./...` — Go integration
+- Control-plane integration: Postgres service + `npm run test:integration`
 
 ### Severity levels
 - **critical/high:** Block merge
