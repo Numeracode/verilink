@@ -1,4 +1,5 @@
 // control-plane/src/domains/principal/principalRepository.ts
+import { randomUUID } from 'node:crypto';
 import { pool, withTransaction } from '../../db/transaction.js';
 
 export interface Principal {
@@ -28,20 +29,60 @@ export async function createPrincipal(
   id: string,
   entityKind: string,
   ownerTenantId?: string,
-  name?: string
+  name?: string,
+  metadata?: Record<string, unknown>,
 ): Promise<Principal> {
   const { rows } = await pool.query(
-    `INSERT INTO principals (id, entity_kind, owner_tenant_id, name)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO principals (id, entity_kind, owner_tenant_id, name, metadata)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (id) DO NOTHING
      RETURNING *`,
-    [id, entityKind, ownerTenantId || null, name || null]
+    [id, entityKind, ownerTenantId || null, name || null, JSON.stringify(metadata ?? {})]
   );
+  if (rows.length === 0) {
+    return (await getPrincipal(id))!;
+  }
   return rows[0];
 }
 
 export async function getPrincipal(id: string): Promise<Principal | null> {
   const { rows } = await pool.query('SELECT * FROM principals WHERE id = $1', [id]);
   return rows[0] || null;
+}
+
+export async function findOrCreateByLegacyDID(
+  legacyDID: string,
+): Promise<Principal> {
+  // Try to find an existing principal mapped from this legacy DID
+  const { rows: existing } = await pool.query(
+    "SELECT * FROM principals WHERE metadata->>'legacy_did' = $1 LIMIT 1",
+    [legacyDID]
+  );
+  if (existing.length > 0) return existing[0];
+
+  // Create a new native principal. The unique index on
+  // (metadata->>'legacy_did') ensures only one insert succeeds for a
+  // given legacy DID. Concurrent inserts get a 23505 and re-query.
+  const nativeID = `vrl:p:${randomUUID()}`;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO principals (id, entity_kind, metadata)
+       VALUES ($1, 'agent', $2)
+       RETURNING *`,
+      [nativeID, JSON.stringify({ legacy_did: legacyDID })]
+    );
+    return rows[0];
+  } catch (err: any) {
+    if (err.code === '23505') {
+      // Another request created it — re-query
+      const { rows: retry } = await pool.query(
+        "SELECT * FROM principals WHERE metadata->>'legacy_did' = $1 LIMIT 1",
+        [legacyDID]
+      );
+      if (retry.length > 0) return retry[0];
+    }
+    throw err;
+  }
 }
 
 export async function listPrincipals(opts: {
@@ -142,4 +183,56 @@ export async function updatePrincipal(id: string, fields: { entity_kind?: string
   if (sets.length === 0) return;
   params.push(id);
   await pool.query(`UPDATE principals SET ${sets.join(', ')} WHERE id = $${idx}`, params);
+}
+
+export interface Issuer {
+  principal_id: string;
+  trust_weight: string;
+  is_bootstrap: boolean;
+  verified_at: Date | null;
+  created_at: Date;
+}
+
+export async function getIssuer(principalId: string): Promise<Issuer | null> {
+  const { rows } = await pool.query(
+    'SELECT * FROM issuers WHERE principal_id = $1',
+    [principalId]
+  );
+  return rows[0] || null;
+}
+
+export async function getKeyByKid(
+  principalId: string,
+  keyId: string,
+  iat?: Date,
+): Promise<PrincipalKey | null> {
+  if (iat) {
+    const { rows } = await pool.query(
+      `SELECT * FROM principal_keys
+       WHERE principal_id = $1 AND key_id = $2 AND revoked_at IS NULL
+         AND valid_from <= $3
+         AND (valid_until IS NULL OR valid_until >= $3)`,
+      [principalId, keyId, iat]
+    );
+    return rows[0] || null;
+  }
+  const { rows } = await pool.query(
+    `SELECT * FROM principal_keys
+     WHERE principal_id = $1 AND key_id = $2 AND revoked_at IS NULL`,
+    [principalId, keyId]
+  );
+  return rows[0] || null;
+}
+
+export async function getActiveKeysAt(principalId: string, iat: Date): Promise<PrincipalKey[]> {
+  const { rows } = await pool.query(
+    `SELECT * FROM principal_keys
+     WHERE principal_id = $1
+       AND revoked_at IS NULL
+       AND valid_from <= $2
+       AND (valid_until IS NULL OR valid_until >= $2)
+     ORDER BY valid_from`,
+    [principalId, iat]
+  );
+  return rows;
 }

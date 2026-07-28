@@ -115,15 +115,16 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     `INSERT INTO users (email, oidc_issuer, oidc_subject)
      VALUES ($1, $2, $3)
      ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET email = EXCLUDED.email
-     RETURNING id`,
+     RETURNING id, platform_role`,
     [payload.email || `${oidcSubject}@placeholder`, oidcIssuer, oidcSubject]
   );
 
   const userId = rows[0].id;
+  const platformRole = rows[0].platform_role || 'member';
 
-  // Get tenant membership (v1 simplification: first matching tenant)
+  // Get all tenant memberships (user may belong to multiple tenants)
   const { rows: memberships } = await pool.query(
-    `SELECT tenant_id, role FROM tenant_memberships WHERE user_id = $1 LIMIT 1`,
+    `SELECT tenant_id, role FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id`,
     [userId]
   );
 
@@ -132,6 +133,9 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     userId,
     tenantId: memberships[0]?.tenant_id || null,
     role: memberships[0]?.role || 'member',
+    tenantIds: memberships.map((m: { tenant_id: string }) => m.tenant_id),
+    roles: memberships.map((m: { role: string }) => m.role),
+    isStaff: platformRole === 'staff' || platformRole === 'admin',
   };
 
   next();
@@ -171,6 +175,9 @@ declare global {
         tenantId?: string | null;
         role?: string;
         scopes?: string[];
+        tenantIds?: string[];
+        roles?: string[];
+        isStaff?: boolean;
       };
     }
   }
