@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/messagesgoel-blip/verilink/internal/trustengine"
 	"github.com/messagesgoel-blip/verilink/pkg/attestation"
 	trustpb "github.com/messagesgoel-blip/verilink/pkg/trustpb"
 	"google.golang.org/grpc"
@@ -19,7 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// startTestServer starts a gRPC server on a random port using newGRPCServer
+// startTestServer starts a gRPC server on a random port using trustengine.NewServer
 // (same interceptors + registration as production) and returns a client +
 // the raw connection (for health checks) + a cleanup func.
 func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn, func()) {
@@ -28,7 +29,7 @@ func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn,
 	if err != nil {
 		t.Fatal(err)
 	}
-	grpcSrv, _ := newGRPCServer()
+	grpcSrv, _ := trustengine.NewServer()
 	go grpcSrv.Serve(lis)
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -274,7 +275,7 @@ func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
 		panic("deliberate panic")
 	}
 
-	resp, err := unaryPanicRecovery(context.Background(), nil, info, handler)
+	resp, err := trustengine.UnaryPanicRecovery(context.Background(), nil, info, handler)
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
 	}
@@ -289,7 +290,7 @@ func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
 	streamHandler := func(srv interface{}, ss grpc.ServerStream) error {
 		panic("deliberate stream panic")
 	}
-	err = streamPanicRecovery(nil, nil, streamInfo, streamHandler)
+	err = trustengine.StreamPanicRecovery(nil, nil, streamInfo, streamHandler)
 	if err == nil {
 		t.Fatal("expected error from stream panic recovery, got nil")
 	}
