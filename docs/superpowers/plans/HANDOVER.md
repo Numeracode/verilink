@@ -86,6 +86,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-2-control-plane-foundation.md` | Plan 2 (detailed) |
 | `docs/superpowers/plans/2026-07-27-verilink-3-request-auth-protocol.md` | Plan 3 |
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
+| `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 (next) |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
