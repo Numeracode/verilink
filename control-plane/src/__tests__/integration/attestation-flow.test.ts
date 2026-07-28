@@ -2,6 +2,7 @@ process.env.DATABASE_URL ||=
   'postgresql://verilink:verilink@127.0.0.1:15432/verilink_test';
 process.env.API_KEY_HMAC_SECRET ||= 'test-hmac-secret-for-integration';
 
+import crypto from 'node:crypto';
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type pg from 'pg';
@@ -86,6 +87,110 @@ describe('Attestation Flow Integration', () => {
     assert.equal(body.ok, true);
     assert.equal(body.data.total, 1);
     assert.equal(body.data.items.length, 1);
+  });
+
+  it('duplicate submission returns 409', async () => {
+    const issuer = await seedIssuer(pool, tenantId);
+    const subject = await seedSubject(pool, tenantId);
+    const token = await signAttestationToken({
+      issuerId: issuer.id,
+      subjectId: subject.id,
+      privateKey: issuer.privateKey,
+      keyId: issuer.keyId,
+    });
+
+    const submitResp1 = await fetch(`${harness.url}/v1/attestations/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(submitResp1.status, 201, await submitResp1.text());
+
+    const submitResp2 = await fetch(`${harness.url}/v1/attestations/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(submitResp2.status, 409);
+  });
+
+  it('invalid signature rejection returns 400', async () => {
+    const issuer = await seedIssuer(pool, tenantId);
+    const subject = await seedSubject(pool, tenantId);
+    const signer = await seedIssuer(pool, tenantId);
+
+    // The JWS is signed with `signer.privateKey`, but claims issuerId=issuer.id and kid=issuer.keyId.
+    // Signature verification must fail against the issuer's stored public key.
+    const token = await signAttestationToken({
+      issuerId: issuer.id,
+      subjectId: subject.id,
+      privateKey: signer.privateKey,
+      keyId: issuer.keyId,
+      visibility: 'participants',
+    });
+
+    const submitResp = await fetch(`${harness.url}/v1/attestations/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(submitResp.status, 400);
+  });
+
+  it('unknown issuer rejection returns 400', async () => {
+    const issuerId = `vrl:p:${crypto.randomUUID()}`;
+    const subject = await seedSubject(pool, tenantId);
+    const issuer = await seedIssuer(pool, tenantId);
+
+    const token = await signAttestationToken({
+      issuerId,
+      subjectId: subject.id,
+      privateKey: issuer.privateKey,
+      keyId: issuer.keyId,
+    });
+
+    const submitResp = await fetch(`${harness.url}/v1/attestations/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(submitResp.status, 400);
+  });
+
+  it('schema violation rejection returns 400', async () => {
+    const issuer = await seedIssuer(pool, tenantId);
+    const subject = await seedSubject(pool, tenantId);
+
+    const token = await signAttestationToken({
+      issuerId: issuer.id,
+      subjectId: subject.id,
+      privateKey: issuer.privateKey,
+      keyId: issuer.keyId,
+      // Not in SUPPORTED_TYPES; validateSchema must reject with 400.
+      attestationType: 'not_a_real_type',
+    });
+
+    const submitResp = await fetch(`${harness.url}/v1/attestations/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(submitResp.status, 400);
   });
 
   it('unauthorized request returns 401', async () => {
