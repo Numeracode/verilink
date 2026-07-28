@@ -10,6 +10,18 @@ const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '../../migrations');
 
+function redactDatabaseUrl(urlStr: string): string {
+  try {
+    const u = new URL(urlStr);
+    if (u.password) {
+      u.password = '***';
+    }
+    return u.toString();
+  } catch {
+    return '[invalid DATABASE_URL]';
+  }
+}
+
 function assertSafeVerilinkTestDb(urlStr: string): void {
   // Safety: integration tests must not truncate arbitrary DBs.
   // We only allow the dedicated local test DB: verilink_test on localhost.
@@ -20,7 +32,7 @@ function assertSafeVerilinkTestDb(urlStr: string): void {
 
   if (!hostOk || !dbOk) {
     assert.fail(
-      `Refusing to run VeriLink integration DB helpers against DATABASE_URL=${urlStr}. ` +
+      `Refusing to run VeriLink integration DB helpers against DATABASE_URL=${redactDatabaseUrl(urlStr)}. ` +
         `Expected host=127.0.0.1|localhost and db=verilink_test.`
     );
   }
@@ -93,9 +105,12 @@ export async function setupTestDb(): Promise<pg.Pool> {
 /** Truncate tenant-scoped / attestation tables between tests. */
 export async function resetTestData(pool: pg.Pool): Promise<void> {
   const url = pool.options?.connectionString;
-  if (typeof url === 'string') {
-    assertSafeVerilinkTestDb(url);
+  if (typeof url !== 'string' || url.length === 0) {
+    assert.fail(
+      'Refusing to reset test data: pool.options.connectionString is missing.'
+    );
   }
+  assertSafeVerilinkTestDb(url);
   await pool.query(`
     TRUNCATE
       attestations,
@@ -111,6 +126,9 @@ export async function resetTestData(pool: pg.Pool): Promise<void> {
 }
 
 export async function teardownTestDb(pool: pg.Pool): Promise<void> {
-  await resetTestData(pool);
-  await pool.end();
+  try {
+    await resetTestData(pool);
+  } finally {
+    await pool.end();
+  }
 }
