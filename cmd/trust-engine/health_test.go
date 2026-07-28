@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/messagesgoel-blip/verilink/internal/trustengine"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
@@ -28,7 +29,7 @@ func TestServer_Health(t *testing.T) {
 func TestServer_HTTPHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/healthz", nil)
-	healthHandler(rec, req)
+	trustengine.HealthHandler(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)

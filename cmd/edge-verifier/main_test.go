@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/messagesgoel-blip/verilink/internal/edgeverifier"
 	"github.com/messagesgoel-blip/verilink/pkg/requestsigin"
 )
 
 func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Backend Success"))
+		_, _ = w.Write([]byte("Backend Success"))
 	}))
 	defer backend.Close()
 
@@ -36,7 +37,7 @@ func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 		t.Fatalf("Failed to register agent: %v", err)
 	}
 
-	proxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
+	proxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
 
 	now := time.Now().Unix()
 	sigInput, signature, err := requestsigin.Sign("GET", "http://localhost:8080/", now, now+300, []byte{}, keyID, priv)
@@ -59,7 +60,7 @@ func TestEdgeVerifierProxy_SignedRequestAllowed(t *testing.T) {
 func TestEdgeVerifierProxy_UnsignedPassesWhenPermissive(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 
@@ -67,7 +68,7 @@ func TestEdgeVerifierProxy_UnsignedPassesWhenPermissive(t *testing.T) {
 	nonceCache := requestsigin.NewNonceCache(5 * time.Minute)
 	defer nonceCache.Stop()
 
-	proxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
+	proxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
 
 	req := httptest.NewRequest("GET", "http://localhost:8080/", nil)
 	rr := httptest.NewRecorder()
@@ -85,7 +86,7 @@ func TestEdgeVerifierProxy_UnsignedPassesWhenPermissive(t *testing.T) {
 func TestEdgeVerifierProxy_UnsignedRejectsWhenStrict(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 
@@ -93,7 +94,7 @@ func TestEdgeVerifierProxy_UnsignedRejectsWhenStrict(t *testing.T) {
 	nonceCache := requestsigin.NewNonceCache(5 * time.Minute)
 	defer nonceCache.Stop()
 
-	proxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, true, "")
+	proxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, true, "")
 
 	req := httptest.NewRequest("GET", "http://localhost:8080/", nil)
 	rr := httptest.NewRecorder()
@@ -111,7 +112,7 @@ func TestEdgeVerifierProxy_UnsignedRejectsWhenStrict(t *testing.T) {
 func TestEdgeVerifierProxy_InvalidSignature(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer backend.Close()
 
@@ -132,7 +133,7 @@ func TestEdgeVerifierProxy_InvalidSignature(t *testing.T) {
 		t.Fatalf("Failed to register agent: %v", err)
 	}
 
-	proxy, _ := NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
+	proxy, _ := edgeverifier.NewEdgeVerifierProxy(backend.URL, nil, registry, nonceCache, false, "")
 
 	now := time.Now().Unix()
 	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)

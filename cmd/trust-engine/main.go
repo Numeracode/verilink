@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,32 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/status"
 
-	trustpb "github.com/messagesgoel-blip/verilink/pkg/trustpb"
+	"github.com/messagesgoel-blip/verilink/internal/trustengine"
 )
-
-// newGRPCServer creates a gRPC server with panic recovery interceptors,
-// registers the TrustEngine + health services, and returns the server +
-// health service handle. Used by both production (main) and tests so the
-// interceptor + registration path is identical.
-func newGRPCServer() (*grpc.Server, *health.Server) {
-	grpcSrv := grpc.NewServer(
-		grpc.UnaryInterceptor(unaryPanicRecovery),
-		grpc.StreamInterceptor(streamPanicRecovery),
-	)
-	trustpb.RegisterTrustEngineServer(grpcSrv, &server{})
-
-	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus(trustpb.TrustEngine_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
-	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
-
-	return grpcSrv, healthSrv
-}
 
 func main() {
 	grpcPort := flag.Int("grpc-port", 9091, "gRPC listen port")
@@ -53,15 +30,10 @@ func main() {
 	grpcAddr := fmt.Sprintf(":%d", *grpcPort)
 	httpAddr := fmt.Sprintf(":%d", *httpPort)
 
-	lis, err := net.Listen("tcp", grpcAddr)
-	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
-
-	grpcSrv, healthSrv := newGRPCServer()
+	grpcSrv, healthSrv := trustengine.NewServer()
 
 	httpMux := http.NewServeMux()
-	httpMux.HandleFunc("/healthz", healthHandler)
+	httpMux.HandleFunc("/healthz", trustengine.HealthHandler)
 	httpSrv := &http.Server{
 		Addr:              httpAddr,
 		Handler:           httpMux,
@@ -117,37 +89,9 @@ func main() {
 		wg.Wait()
 	}()
 
-	log.Printf("trust-engine listening on %s", grpcAddr)
-	if err := grpcSrv.Serve(lis); err != nil {
+	if err := trustengine.Run(grpcSrv, grpcAddr); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 
 	<-shutdownDone
-}
-
-func unaryPanicRecovery(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic recovered in %s: %v", info.FullMethod, r)
-			err = status.Errorf(codes.Internal, "internal error")
-		}
-	}()
-	return handler(ctx, req)
-}
-
-func streamPanicRecovery(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("panic recovered in %s: %v", info.FullMethod, r)
-			err = status.Errorf(codes.Internal, "internal error")
-		}
-	}()
-	return handler(srv, ss)
-}
-
-// healthHandler is the HTTP /healthz handler. Package-level so tests can
-// call it directly without recreating the handler logic.
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
 }

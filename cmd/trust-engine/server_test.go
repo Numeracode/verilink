@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/messagesgoel-blip/verilink/internal/trustengine"
 	"github.com/messagesgoel-blip/verilink/pkg/attestation"
 	trustpb "github.com/messagesgoel-blip/verilink/pkg/trustpb"
 	"google.golang.org/grpc"
@@ -19,7 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// startTestServer starts a gRPC server on a random port using newGRPCServer
+// startTestServer starts a gRPC server on a random port using trustengine.NewServer
 // (same interceptors + registration as production) and returns a client +
 // the raw connection (for health checks) + a cleanup func.
 func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn, func()) {
@@ -28,8 +29,8 @@ func startTestServer(t *testing.T) (trustpb.TrustEngineClient, *grpc.ClientConn,
 	if err != nil {
 		t.Fatal(err)
 	}
-	grpcSrv, _ := newGRPCServer()
-	go grpcSrv.Serve(lis)
+	grpcSrv, _ := trustengine.NewServer()
+	go func() { _ = grpcSrv.Serve(lis) }()
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -148,19 +149,25 @@ func TestServer_RunVeriRank_MissingPrincipalRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	// Send root but NO principal for it — should be rejected.
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Root{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Root{
 		Root: &trustpb.Root{Id: "vrl:p:root", Weight: 1.0},
-	}})
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Attestation{
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Attestation{
 		Attestation: &trustpb.Attestation{
 			IssuerId: "vrl:p:root", SubjectId: "vrl:p:a",
 			TrustDelta: 100, IssuedAtUnix: now.Unix(), AttestationType: "transaction_summary",
 		},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = stream.CloseAndRecv()
 	if err == nil {
@@ -178,13 +185,15 @@ func TestServer_RunVeriRank_DuplicateHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
-		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
 	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}}); err == nil {
-		// Some gRPC impls buffer; the error surfaces on CloseAndRecv.
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if sendErr := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
+	}}); sendErr != nil {
+		t.Logf("duplicate header rejected on send: %v", sendErr)
 	}
 	_, err = stream.CloseAndRecv()
 	if err == nil {
@@ -198,15 +207,19 @@ func TestServer_RunVeriRank_NaNWeight(t *testing.T) {
 
 	now := time.Now()
 	stream, _ := client.RunVeriRank(context.Background())
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Header{
 		Header: &trustpb.RunHeader{EvaluationTimeUnix: now.Unix()},
-	}})
-	stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Principal{
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&trustpb.RunChunk{Payload: &trustpb.RunChunk_Principal{
 		Principal: &trustpb.Principal{
 			Id: "vrl:p:x", EntityKind: "agent",
 			TrustWeight: math.NaN(),
 		},
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	_, err := stream.CloseAndRecv()
 	if err == nil {
 		t.Fatal("expected error for NaN weight, got nil")
@@ -274,7 +287,7 @@ func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
 		panic("deliberate panic")
 	}
 
-	resp, err := unaryPanicRecovery(context.Background(), nil, info, handler)
+	resp, err := trustengine.UnaryPanicRecovery(context.Background(), nil, info, handler)
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
 	}
@@ -289,7 +302,7 @@ func TestServer_VerifyAttestation_PanicRecovery(t *testing.T) {
 	streamHandler := func(srv interface{}, ss grpc.ServerStream) error {
 		panic("deliberate stream panic")
 	}
-	err = streamPanicRecovery(nil, nil, streamInfo, streamHandler)
+	err = trustengine.StreamPanicRecovery(nil, nil, streamInfo, streamHandler)
 	if err == nil {
 		t.Fatal("expected error from stream panic recovery, got nil")
 	}

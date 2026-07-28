@@ -23,10 +23,10 @@ router.post('/submit', requireScope('attest:write'), defineHandler({
 
 router.get('/', requireScope('attest:read'), defineHandler({
   query: {
-    issuer_id: { type: 'string' },
-    subject_id: { type: 'string' },
-    limit: { type: 'number', min: 1, max: 200 },
-    offset: { type: 'number', min: 0 },
+    issuer_id: { type: 'string', required: false },
+    subject_id: { type: 'string', required: false },
+    limit: { type: 'number', min: 1, max: 200, required: false },
+    offset: { type: 'number', min: 0, required: false },
   },
   async handler(req, res) {
     const callerTenantIds = resolveCallerTenantIds(req.user);

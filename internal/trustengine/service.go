@@ -1,4 +1,4 @@
-package main
+package trustengine
 
 import (
 	"context"
@@ -75,9 +75,6 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 			}
 			if p.Attestation.IssuedAtUnix == 0 {
 				return status.Error(codes.InvalidArgument, "attestation issued_at_unix is required")
-			}
-			if p.Attestation.TrustDelta < math.MinInt32 || p.Attestation.TrustDelta > math.MaxInt32 {
-				return status.Errorf(codes.InvalidArgument, "attestation trust_delta %d out of int32 range", p.Attestation.TrustDelta)
 			}
 			claims = append(claims, protoAttestationToClaims(p.Attestation))
 		case *trustpb.RunChunk_Principal:
@@ -205,7 +202,7 @@ func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error
 		pbRows = append(pbRows, &trustpb.ScoreRow{
 			PrincipalId: row.PrincipalID,
 			EntityKind:  ek,
-			Score:       int32(row.Score),
+			Score:       mustInt32(row.Score, "score"),
 			Blacklisted: row.Blacklisted,
 			ScoreReason: string(row.ScoreReason),
 		})
@@ -269,11 +266,11 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			}, nil
 		}
 
-		factsJSON, err := json.Marshal(claims.VerilinkClaims.Facts)
-		if err != nil {
+		factsJSON, marshalErr := json.Marshal(claims.VerilinkClaims.Facts)
+		if marshalErr != nil {
 			return &trustpb.VerifyResult{
 				Valid: false,
-				Error: fmt.Sprintf("marshal facts: %v", err),
+				Error: fmt.Sprintf("marshal facts: %v", marshalErr),
 			}, nil
 		}
 
@@ -287,6 +284,14 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			jti = claims.ID
 		}
 
+		td, tdOK := checkedInt32(claims.VerilinkClaims.TrustLevelDelta)
+		if !tdOK {
+			return &trustpb.VerifyResult{
+				Valid: false,
+				Error: fmt.Sprintf("trust level delta out of int32 range: %d", claims.VerilinkClaims.TrustLevelDelta),
+			}, nil
+		}
+
 		return &trustpb.VerifyResult{
 			Valid:         true,
 			VerifiedKeyId: cand.KeyId,
@@ -295,7 +300,7 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			Payload: &trustpb.AttestationPayload{
 				AttestationType: claims.VerilinkClaims.Type,
 				FactsJson:       factsJSON,
-				TrustLevelDelta: int32(claims.VerilinkClaims.TrustLevelDelta),
+				TrustLevelDelta: td,
 				IssuedAtUnix:    claims.IssuedAt.Time.Unix(),
 				ExpiresAtUnix:   expUnix,
 				Jti:             jti,
@@ -324,4 +329,26 @@ func (s *server) GetFingerprint(ctx context.Context, req *trustpb.FingerprintReq
 		return nil, status.Errorf(codes.Internal, "fingerprint: %v", err)
 	}
 	return &trustpb.Fingerprint{Sha256: fp}, nil
+}
+
+func mustInt32(v int, field string) int32 {
+	const (
+		minInt32 = -1 << 31
+		maxInt32 = 1<<31 - 1
+	)
+	if v < minInt32 || v > maxInt32 {
+		panic(fmt.Sprintf("%s out of int32 range: %d", field, v))
+	}
+	return int32(v)
+}
+
+func checkedInt32(v int) (int32, bool) {
+	const (
+		minInt32 = -1 << 31
+		maxInt32 = 1<<31 - 1
+	)
+	if v < minInt32 || v > maxInt32 {
+		return 0, false
+	}
+	return int32(v), true
 }
