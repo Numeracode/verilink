@@ -150,10 +150,12 @@ describe('Tenant Isolation Integration', () => {
     assert.equal(listUnfilteredWithTenantAKey.status, 200);
     const dataUnfiltered = (await listUnfilteredWithTenantAKey.json()) as {
       ok: boolean;
-      data: { items: unknown[]; total: number };
+      data: { items: Array<{ issuer_id: string }>; total: number };
     };
     assert.equal(dataUnfiltered.ok, true);
     assert.equal(dataUnfiltered.data.total, 1);
     assert.equal(dataUnfiltered.data.items.length, 1);
+    assert.equal(dataUnfiltered.data.items[0].issuer_id, issuerA.id);
+    assert.notEqual(dataUnfiltered.data.items[0].issuer_id, issuerB.id);
   });
 });
