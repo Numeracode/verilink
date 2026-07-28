@@ -45,9 +45,9 @@ jobs:
         run: go build ./...
 
       - name: Secrets scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@latest
+          gitleaks detect --source . --no-banner
 
       - name: Vulnerability check
         run: |
@@ -83,4 +83,8 @@ jobs:
         run: cd proto && buf lint
 
       - name: Check generated code
-        run: cd proto && buf generate --template ../buf.gen.yaml --diff
+        run: |
+          cd proto
+          buf generate --template ../buf.gen.yaml
+          cd ..
+          git diff --exit-code -- pkg/trustpb
