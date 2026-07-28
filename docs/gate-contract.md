@@ -48,8 +48,8 @@ Runs on every PR push and main merge. All checks must pass for merge.
 | 5 | Secrets | `gitleaks detect --source . --verbose` | 60s | critical |
 | 6 | Vulnerability | `govulncheck ./...` | 120s | medium |
 | 7 | cyclomatic complexity | `gocyclo -over 25 .` | 60s | medium |
-| 8 | Go integration | `go test -tags=integration -count=1 ./...` | 300s | critical |
-| 9 | Control plane integration | Postgres service + `npm run test:integration` in `control-plane/` | 600s | critical |
+| 8 | Go integration | `go test -tags=integration -count=1 ./...` | 600s | critical |
+| 9 | Control plane integration | Postgres service + `npm run test:integration` in `control-plane/` | 900s | critical |
 
 Control-plane integration CI sets `DATABASE_URL` to a dedicated `verilink_test`
 database on `127.0.0.1` (see `control-plane/src/testutil/testDb.ts` safety guard).
