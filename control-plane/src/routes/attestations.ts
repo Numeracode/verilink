@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { requireScope } from '../middleware/requireScope.js';
 import { AppError, CODES } from '../shared/errors/AppError.js';
 import * as attestationService from '../domains/attestation/attestationService.js';
+import { resolveCallerTenantIds } from '../lib/tenantFilter.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -28,11 +29,7 @@ router.get('/', requireScope('attest:read'), defineHandler({
     offset: { type: 'number', min: 0 },
   },
   async handler(req, res) {
-    const tenantIds = req.user?.tenantIds || (req.user?.tenantId ? [req.user.tenantId] : []);
-    const roles = req.user?.roles || [];
-    const callerTenantIds = roles.length > 0
-      ? tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin')
-      : tenantIds;
+    const callerTenantIds = resolveCallerTenantIds(req.user);
     const result = await attestationService.listAttestations({
       issuerId: req.query.issuer_id as string,
       subjectId: req.query.subject_id as string,

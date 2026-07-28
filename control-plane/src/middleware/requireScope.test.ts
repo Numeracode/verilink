@@ -146,28 +146,3 @@ describe('requireScope — tenant-admin isolation', () => {
     assert.equal(errors[0].message, 'Missing required scope: attest:write');
   });
 });
-describe('requireScope — callerTenantIds tenant-role pairing', () => {
-  it('user admin in tenant A and member in tenant B: callerTenantIds only includes tenant A', () => {
-    const tenantIds = ['tenant-a', 'tenant-b'];
-    const roles = ['admin', 'member'];
-    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
-    assert.equal(callerTenantIds.length, 1);
-    assert.equal(callerTenantIds[0], 'tenant-a');
-  });
-
-  it('user member in both tenants: callerTenantIds is empty (no elevated roles)', () => {
-    const tenantIds = ['tenant-a', 'tenant-b'];
-    const roles = ['member', 'member'];
-    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
-    assert.equal(callerTenantIds.length, 0);
-  });
-
-  it('user staff in tenant B and admin in tenant A: callerTenantIds includes both', () => {
-    const tenantIds = ['tenant-a', 'tenant-b'];
-    const roles = ['admin', 'staff'];
-    const callerTenantIds = tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
-    assert.equal(callerTenantIds.length, 2);
-    assert(callerTenantIds.includes('tenant-a'));
-    assert(callerTenantIds.includes('tenant-b'));
-  });
-});

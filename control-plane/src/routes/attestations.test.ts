@@ -1,19 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { requireScope } from '../middleware/requireScope.js';
-
-function resolveCallerTenantIds(user: {
-  tenantIds?: string[];
-  tenantId?: string | null;
-  roles?: string[];
-}): string[] {
-  const tenantIds = user.tenantIds || (user.tenantId ? [user.tenantId] : []);
-  const roles = user.roles || [];
-  if (roles.length > 0) {
-    return tenantIds.filter((_, i) => roles[i] === 'staff' || roles[i] === 'admin');
-  }
-  return tenantIds;
-}
+import { resolveCallerTenantIds } from '../lib/tenantFilter.js';
 
 describe('resolveCallerTenantIds — tenant-role pairing with API-key fallback', () => {
   it('API key user: tenantId passes through unfiltered (no roles array)', () => {
@@ -67,39 +54,9 @@ describe('resolveCallerTenantIds — tenant-role pairing with API-key fallback',
     });
     assert.equal(callerTenantIds.length, 0);
   });
-});
 
-describe('requireScope — API key scope enforcement', () => {
-  it('API key with attest:read scope CAN access', () => {
-    const req = {
-      user: {
-        type: 'apikey',
-        apiKeyId: 'key-1',
-        tenantId: 'tenant-a',
-        scopes: ['attest:read'],
-      },
-    } as any;
-    const next = (err?: any) => {
-      if (err) throw err;
-    };
-    requireScope('attest:read')(req, {} as any, next);
-  });
-
-  it('API key without attest:read scope CANNOT access', () => {
-    const req = {
-      user: {
-        type: 'apikey',
-        apiKeyId: 'key-2',
-        tenantId: 'tenant-a',
-        scopes: ['attest:write'],
-      },
-    } as any;
-    const errors: Error[] = [];
-    const next = (err?: any) => {
-      if (err) errors.push(err);
-    };
-    requireScope('attest:read')(req, {} as any, next);
-    assert.equal(errors.length, 1);
-    assert.equal(errors[0].message, 'Missing required scope: attest:read');
+  it('undefined user returns empty array', () => {
+    const callerTenantIds = resolveCallerTenantIds(undefined);
+    assert.equal(callerTenantIds.length, 0);
   });
 });
