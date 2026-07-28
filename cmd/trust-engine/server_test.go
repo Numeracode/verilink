@@ -63,8 +63,8 @@ func TestServer_RunVeriRank_3Hop(t *testing.T) {
 
 	// Principals (all 4 entities must be streamed)
 	principals := []struct {
-		id, kind string
-		weight   float64
+		id, kind  string
+		weight    float64
 		bootstrap bool
 	}{
 		{"vrl:p:root", "issuer", 1.0, true},

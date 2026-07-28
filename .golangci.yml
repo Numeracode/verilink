@@ -1,0 +1,70 @@
+# golangci-lint configuration for VeriLink
+# Docs: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocyclo
+    - goimports
+    - gosec
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - contextcheck
+    - durationcheck
+    - errchkjson
+    - exportloopref
+    - makezero
+    - nilerr
+    - prealloc
+    - predeclared
+    - reassign
+    - wastedassign
+
+linters-settings:
+  gocyclo:
+    min-complexity: 25
+  govet:
+    check-shadowing: true
+  gosec:
+    excludes:
+      - G104  # Unhandled errors — we handle these explicitly
+  goimports:
+    local-prefixes: github.com/Numeracode/verilink
+
+issues:
+  exclude-rules:
+    # Test files can have longer functions
+    - path: _test\.go
+      linters:
+        - gocyclo
+      text: "function is high complexity"
+    # Generated protobuf files
+    - path: \.pb\.go$
+      linters:
+        - errcheck
+        - govet
+        - unused
+        - gocyclo
+  max-issues-per-linter: 50
+  max-same-issues: 10
+
+severity:
+  default-severity: warning
+  rules:
+    - linters:
+        - gosec
+      severity: error
+    - linters:
+        - gocyclo
+      severity: warning

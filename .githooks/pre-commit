@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# VeriLink pre-commit gate
+# Runs: gitleaks (secrets), go vet, goimports check
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+failed=0
+
+echo "Running pre-commit gate..."
+
+# 1. Secrets scan
+echo -n "  gitleaks (secrets)... "
+if command -v gitleaks &>/dev/null; then
+    # Scan staged changes only, using config that excludes test files
+    if git diff --cached --name-only --diff-filter=ACM | xargs gitleaks detect --no-git --verbose -c .gitleaks.toml 2>/dev/null; then
+        echo -e "${GREEN}PASS${NC}"
+    else
+        echo -e "${RED}FAIL${NC} — secrets detected in staged files"
+        failed=1
+    fi
+else
+    echo -e "${YELLOW}SKIP${NC} — gitleaks not installed"
+fi
+
+# 2. Go vet
+echo -n "  go vet... "
+if go vet ./... 2>/dev/null; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL${NC}"
+    failed=1
+fi
+
+# 3. Import ordering
+echo -n "  goimports... "
+if command -v goimports &>/dev/null; then
+    unformatted=$(goimports -l . 2>/dev/null || true)
+    if [ -z "$unformatted" ]; then
+        echo -e "${GREEN}PASS${NC}"
+    else
+        echo -e "${RED}FAIL${NC} — unformatted files:"
+        echo "$unformatted"
+        failed=1
+    fi
+else
+    echo -e "${YELLOW}SKIP${NC} — goimports not installed"
+fi
+
+if [ $failed -ne 0 ]; then
+    echo -e "\n${RED}Pre-commit gate FAILED${NC}"
+    echo "Fix the issues above or use --no-verify to bypass (recorded as finding)"
+    exit 1
+fi
+
+echo -e "\n${GREEN}Pre-commit gate PASSED${NC}"

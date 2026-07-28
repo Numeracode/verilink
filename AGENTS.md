@@ -52,11 +52,57 @@ VeriLink owns the Trust Protocol for the Agentic Economy: Non-Human Identity (NH
   - request `@coderabbitai review`
   - address findings before merging
 
+## Clean Gate Policy
+
+**Full gate contract:** `docs/gate-contract.md`
+
+### Pre-commit (local, blocking)
+- `gitleaks detect --staged` — secrets scan
+- `go vet ./...` — static analysis
+- `goimports -l .` — import ordering
+
+### Pre-push (local, blocking)
+- `go test ./...` — full test suite
+- `go build ./...` — build verification
+- `govulncheck ./...` — vulnerability scan
+
+### CI (GitHub Actions, blocking)
+- `golangci-lint run --timeout 5m` — comprehensive linting
+- `go test -race -count=1 ./...` — race condition detection
+- `go build ./...` — build verification
+- `buf lint && buf generate --diff` — proto validation
+- `gitleaks detect --source . --verbose` — secrets scan
+- `govulncheck ./...` — vulnerability scan
+- `gocyclo -over 25 .` — cyclomatic complexity
+
+### Severity levels
+- **critical/high:** Block merge
+- **medium/low:** Recorded, informational
+
+### Waivers
+- Add to `.gate-waivers.json` with reason, author, expiry
+- 30-day auto-expiry, renewal requires re-review
+
 ## Local Dev Commands
 
 ```bash
 # Run all tests
 go test ./...
+
+# Run tests with race detector
+go test -race ./...
+
+# Build all binaries
+go build ./...
+
+# Lint
+golangci-lint run --timeout 5m
+
+# Vulnerability check
+govulncheck ./...
+
+# Proto lint
+buf lint
 
 # Start Edge Verifier
 go run cmd/edge-verifier/main.go

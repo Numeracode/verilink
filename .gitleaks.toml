@@ -1,0 +1,13 @@
+# gitleaks configuration for VeriLink
+# Excludes test files and known test data
+
+title = "VeriLink gitleaks config"
+
+[allowlist]
+  description = "Global allowlist"
+  paths = [
+    '''pkg/requestsigin/config_test.go''',
+    '''_test\.go$''',
+    '''\.pb\.go$''',
+    '''\.pb\.gw\.go$''',
+  ]

@@ -1,0 +1,3 @@
+# Test data — not real secrets
+# These are deterministic test DIDs used in unit tests
+pkg/requestsigin/config_test.go

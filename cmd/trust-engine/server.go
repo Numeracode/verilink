@@ -29,13 +29,13 @@ type server struct {
 // principals, and roots in any order.
 func (s *server) RunVeriRank(stream trustpb.TrustEngine_RunVeriRankServer) error {
 	var (
-		evalTime        time.Time
-		claims          []*attestation.AttestationClaims
-		principals      []trust.Principal
-		roots           []trust.Root
-		headerSeen      bool
-		seenPrincipals  = make(map[string]bool)
-		seenRoots       = make(map[string]bool)
+		evalTime       time.Time
+		claims         []*attestation.AttestationClaims
+		principals     []trust.Principal
+		roots          []trust.Root
+		headerSeen     bool
+		seenPrincipals = make(map[string]bool)
+		seenRoots      = make(map[string]bool)
 	)
 
 	for {
@@ -293,15 +293,15 @@ func (s *server) VerifyAttestation(ctx context.Context, req *trustpb.VerifyReque
 			IssuerId:      claims.Issuer,
 			SubjectId:     claims.Subject,
 			Payload: &trustpb.AttestationPayload{
-				AttestationType:    claims.VerilinkClaims.Type,
-				FactsJson:          factsJSON,
-				TrustLevelDelta:    int32(claims.VerilinkClaims.TrustLevelDelta),
-				IssuedAtUnix:       claims.IssuedAt.Time.Unix(),
-				ExpiresAtUnix:      expUnix,
-				Jti:                jti,
-				SchemaVersion:      claims.VerilinkClaims.SchemaVersion,
-				Visibility:         claims.VerilinkClaims.Visibility,
-				ObservationId:      claims.VerilinkClaims.ObservationID,
+				AttestationType: claims.VerilinkClaims.Type,
+				FactsJson:       factsJSON,
+				TrustLevelDelta: int32(claims.VerilinkClaims.TrustLevelDelta),
+				IssuedAtUnix:    claims.IssuedAt.Time.Unix(),
+				ExpiresAtUnix:   expUnix,
+				Jti:             jti,
+				SchemaVersion:   claims.VerilinkClaims.SchemaVersion,
+				Visibility:      claims.VerilinkClaims.Visibility,
+				ObservationId:   claims.VerilinkClaims.ObservationID,
 			},
 		}, nil
 	}
