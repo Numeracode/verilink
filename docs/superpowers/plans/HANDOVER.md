@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-29  
-> **Repo HEAD:** `main` @ Plan 6 PR A merged (PR #12)  
-> **Status:** Plan 6 PR A on `main`. Implementing Plan 6 **PR B** (scheduler + ingest hook + mandatory CI trust-engine)  
-> **Next session:** Land Plan 6 PR B → Plan 6 complete → Plan 7 (SSE / edge sync)
+> **Repo HEAD:** `main` @ Plan 6 complete (PRs #12 + #13 merged)  
+> **Status:** Plans 1–6 done. Plan 7 plan doc ready for review.  
+> **Next session:** Review + land Plan 7 plan doc → implement SSE edge sync
 
 ---
 
@@ -15,7 +15,7 @@ VeriLink is past the “toolkit only” MVP. The monorepo now has:
 |---------|----------|--------|
 | Trust engine (gRPC) | `cmd/trust-engine`, `internal/trustengine` | `RunVeriRank`, `VerifyAttestation`, `GetFingerprint` |
 | Edge verifier | `cmd/edge-verifier`, `internal/edgeverifier` | RFC 9421 three-way outcomes + trust annotations |
-| Control plane (TS) | `control-plane/` | Express + Postgres; attestation ingest E2E; score writer (PR A) |
+| Control plane (TS) | `control-plane/` | Express + Postgres; ingest E2E; score writer + recompute scheduler (Plan 6) |
 | Clients | `client/go`, `client/node` | Signing helpers present |
 | Proto | `proto/verilink/trust/v1/trust.proto` → `pkg/trustpb` | Buf pipeline in CI |
 
@@ -58,21 +58,27 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 6 — Network score computation — IN PROGRESS
+## Plan 6 — Network score computation — DONE
 
 - Plan doc: `docs/superpowers/plans/2026-07-28-network-score-computation.md`
 - Design: §4.5 + §13 step 10
-- **PR A (merged #12):** migrations `009`–`012`, loader (expiry + active principals + shared `evaluationTime`), writer (`pg_advisory_xact_lock`, history `entity_kind`), empty-roots cold-start vs clear-stale, live gRPC `RunVeriRank` client + units
-- **PR B (this branch):** single-flight `RecomputeScheduler` (deterministic stop), ingest `markDirty`, `index.ts` start/stop, mandatory CI trust-engine + `score-recompute` integration
-- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns + API `[0,1]`; `entity_kind` on history + change detection; PR B mandatory live-engine CI
+- **PR A (merged #12):** migrations `009`–`012`, loader, writer, RunVeriRank gRPC client + units
+- **PR B (merged #13):** `RecomputeScheduler`, ingest `markDirty`, mandatory CI trust-engine + score-recompute integration
 
-### What’s after Plan 6 (§13)
+---
 
-1. **Sync event log + edge sync** (step 11)  
-2. **Go edge hardening** (step 12)  
-3. **Dashboard** (step 13)  
-4. **Bootstrap registry + seed** (step 14)  
-5. **Deploy / clients / reference integrations** (steps 15–18)
+## Plan 7 — SSE edge sync — READY TO EXECUTE
+
+- Plan doc: `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md`
+- Design: §4.5 steps 3–5 + §13 step 11
+- **This PR (#14):** plan doc + handover only
+
+### What’s after Plan 7 (§13)
+
+1. **Go edge hardening** (step 12) — SSE client, atomic snapshot, WAL  
+2. **Dashboard** (step 13)  
+3. **Bootstrap registry + seed** (step 14)  
+4. **Deploy / clients / reference integrations** (steps 15–18)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
@@ -88,6 +94,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-3-request-auth-protocol.md` | Plan 3 |
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
 | `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 |
+| `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` | Plan 7 |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
