@@ -6,7 +6,7 @@
 
 **Maps to:** productization design §4.5 steps 3–5, §13 step 11.
 
-**Review revisions (2026-07-29):** cursor event frequency tightened to every poll cycle; snapshot compression scoped to non-SSE routes only with flush strategy; snapshot-consistent high-water for cursor events; connection limits and backpressure noted; graceful shutdown for SSE draining; sync_cursors write hardened; CI trust-engine requirement explicit; bootstrap cursor `0` rule; poll-delivered wording; monotonic `sync_cursors`; per-connection SSE write backpressure.
+**Review revisions (2026-07-29):** cursor event frequency tightened to every poll cycle; snapshot compression scoped to non-SSE routes only with flush strategy; snapshot-consistent high-water for cursor events; connection limits and backpressure noted; graceful shutdown for SSE draining; sync_cursors write hardened; CI trust-engine requirement explicit; bootstrap cursor `0` rule; poll-delivered wording; monotonic `sync_cursors`; per-connection SSE write backpressure; bounded initial-batch probe; strict `Last-Event-ID` parsing; empty-table `COALESCE` high-water; shutdown control-frame priority.
 
 ---
 
