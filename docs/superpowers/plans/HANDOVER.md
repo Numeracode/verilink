@@ -62,8 +62,8 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 - Plan doc: `docs/superpowers/plans/2026-07-28-network-score-computation.md`
 - Design: §4.5 + §13 step 10
-- Locked: in-process debounce (60s) + hourly tick; live gRPC `RunVeriRank`; Verify stays in-process Node; write scores + `sync_events` in one TX
-- Suggested split: **PR A** loader/writer/gRPC client + units; **PR B** scheduler + ingest hook + integration
+- Locked: single-flight debounce (60s) + hourly + dirty latch; live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; `entity_kind` in change detection; PR B mandatory live-engine CI
+- Suggested split: **PR A** loader/writer/gRPC client + units; **PR B** scheduler + ingest hook + mandatory CI trust-engine integration
 
 ### What’s after Plan 6 (§13)
 
