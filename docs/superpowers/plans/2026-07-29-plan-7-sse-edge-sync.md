@@ -43,6 +43,10 @@ All actionable comments from human review, CodeRabbit, and Qodo on PR #14 are lo
 | CodeRabbit | Initial backlog (≤10k) vs write queue (1024) | Decision 12; Task 1 |
 | CodeRabbit | Keep `last_event_id` raw string until Decision 15 parse | Decision 15; Task 1 |
 | CodeRabbit | Persist last-written cursor, not merely enqueued | Decision 11; Task 1; Task 6 |
+| CodeRabbit | Bound queued bytes, not only frame count | Decision 12; Task 1; Task 3 |
+| CodeRabbit | Omitted vs supplied-blank `Last-Event-ID` | Decision 15; Task 5 |
+| CodeRabbit | Probe + first batch one snapshot | Decision 3 / 17; Task 1 |
+| CodeRabbit | `edge_node_id` from authenticated principal only | Decision 11; Task 6 |
 
 ---
 
@@ -78,22 +82,24 @@ What's missing:
 8. **Polling interval for new events:** configurable, default **5 seconds**. The handler polls tenant-filtered `sync_version > last_emitted_hw` (stream cursor advances via durable events + non-durable cursor events). **Worst-case latency** from Postgres commit to edge-visible bytes is **one poll interval** (plus network), unless post-v1 notify is added. **Bursty commits:** if several events land between polls, they are delivered together on the next poll; the **last event in the burst** still waits up to a full interval after its commit time. This is expected for poll-based v1.
 9. **Snapshot compression (revised):** `GET /v1/sync/snapshot` supports gzip via `Accept-Encoding`. **Compression middleware must be scoped to the snapshot route only** — it must **not** wrap the SSE `/v1/sync/events` response. SSE responses must not be compressed (buffering breaks heartbeat freshness guarantees). For snapshot, use `compression({ flush: zlib.Z_SYNC_FLUSH })` so large snapshot payloads stream without excessive buffering.
 10. **Edge sync client (Go):** deferred to Plan 8 / step 12. Plan 7 delivers the control-plane streaming endpoint; the Go edge client consumes it in the next step.
-11. **`sync_cursors` persistence:** the control-plane writes `last_cursor` per edge_node on disconnect (best-effort) and **periodically: every 60 seconds or every 100 durable sync events streamed to the client, whichever comes first** (cursor events, heartbeats, and shutdown frames do **not** count toward the 100). Track two cursors per connection: **`last_emitted_hw`** (advanced when a durable/cursor frame is **enqueued** — drives poll `WHERE sync_version > …`) and **`last_written_hw`** (advanced only after the corresponding frame has been successfully handed to `res.write` / left the outbound queue). **Persist `last_written_hw` only** — never `last_emitted_hw`, and never a raw client `Last-Event-ID` ahead of global `high_water`. **All upserts monotonic:** `last_cursor = GREATEST(sync_cursors.last_cursor, EXCLUDED.last_cursor)` with `EXCLUDED.last_cursor <= high_water`. Failures logged as warnings. Lag metrics only; resume uses edge `Last-Event-ID`.
+11. **`sync_cursors` persistence:** the control-plane writes `last_cursor` per **authenticated** `edge_node_id` (from the edge principal / session — **never** from a client-supplied query/body field) on disconnect (best-effort) and **periodically: every 60 seconds or every 100 durable sync events streamed to the client, whichever comes first** (cursor events, heartbeats, and shutdown frames do **not** count toward the 100). Track two cursors per connection: **`last_emitted_hw`** (advanced when a durable/cursor frame is **enqueued** — drives poll `WHERE sync_version > …`) and **`last_written_hw`** (advanced only after the corresponding frame has been successfully handed to `res.write` / left the outbound queue). **Persist `last_written_hw` only** — never `last_emitted_hw`, and never a raw client `Last-Event-ID` ahead of global `high_water`. **All upserts monotonic:** `last_cursor = GREATEST(sync_cursors.last_cursor, EXCLUDED.last_cursor)` with `EXCLUDED.last_cursor <= high_water`. Failures logged as warnings. Lag metrics only; resume uses edge `Last-Event-ID`.
 12. **Connection limits and backpressure:**
     - Configurable max concurrent SSE connections per control-plane instance: `SYNC_SSE_MAX_CONNECTIONS` (default 100). New connections beyond this limit receive `503 Service Unavailable`.
-    - Initial batch cap: bounded probe as in Decision 3; **`429`** when count > `SYNC_SSE_MAX_INITIAL_BATCH`.
-    - **Per-connection write backpressure:** each connection has a **bounded data queue** (default `SYNC_SSE_WRITE_QUEUE_MAX` = **1024** frames — sized for ~100-event poll bursts plus heartbeats/cursors during brief TCP stalls; tune down only if memory-bound). **Dedicated control lane** (not counted against the data cap) for **`event: shutdown`**. Data queue holds durable events, cursor events, and `: ping` heartbeats. On data queue full: wait for `drain` up to **`SYNC_SSE_SLOW_CLIENT_MS` (60000 ms = 60 seconds)**, then close. If `res.write()` returns false, pause dequeuing until `drain`.
-    - **Initial / poll batch vs queue capacity:** `SYNC_SSE_MAX_INITIAL_BATCH` (default 10000) may exceed the data queue. **Do not** dump the full batch into the queue. **Incrementally produce** rows into the queue: enqueue one frame at a time (or small chunks); when the queue is full, **pause production** until `drain` frees capacity; only then continue. A client within the documented backlog cap must **not** be closed as “slow” solely because initial rows exceed queue depth — slow-client timer applies only when a frame cannot make progress toward `res.write` for `SYNC_SSE_SLOW_CLIENT_MS`. Same incremental rule applies to subsequent poll batches.
+    - Initial batch cap: bounded probe as in Decision 3 / 17; **`429`** when count > `SYNC_SSE_MAX_INITIAL_BATCH`.
+    - **Per-connection write backpressure:** each connection has a **bounded data queue** by **frame count** (default `SYNC_SSE_WRITE_QUEUE_MAX` = **1024**) **and by bytes** (default `SYNC_SSE_WRITE_QUEUE_MAX_BYTES` = **8 MiB** of pending SSE frame bodies). **Dedicated control lane** (not counted against data caps) for **`event: shutdown`**. Data queue holds durable events, cursor events, and `: ping` heartbeats. Enqueue is rejected / blocked when either the frame count **or** the byte budget would be exceeded; wait for `drain` up to **`SYNC_SSE_SLOW_CLIENT_MS` (60000 ms = 60 seconds)**, then close. If `res.write()` returns false, pause dequeuing until `drain`.
+    - **Per-frame size limit:** serialized durable event frames larger than `SYNC_SSE_MAX_FRAME_BYTES` (default **1 MiB**) are **not enqueued**. Log a warning; respond **`413 Payload Too Large`** if still before SSE headers, otherwise close the connection after best-effort `event: shutdown` (oversized JSONB must not pin memory). Cursor / ping / shutdown frames are tiny and exempt from this check.
+    - **Initial / poll batch vs queue capacity:** `SYNC_SSE_MAX_INITIAL_BATCH` (default 10000) may exceed the data queue. **Do not** dump the full batch into the queue. **Incrementally produce** rows into the queue: enqueue one frame at a time (or small chunks); when the queue is full **by frames or bytes**, **pause production** until `drain` frees capacity; only then continue. A client within the documented backlog cap must **not** be closed as “slow” solely because initial rows exceed queue depth — slow-client timer applies only when a frame cannot make progress toward `res.write` for `SYNC_SSE_SLOW_CLIENT_MS`. Same incremental rule applies to subsequent poll batches.
     - **Graceful shutdown signal:** emit a **named event** `event: shutdown\ndata: {}\n\n` on the control lane (SSE comments are ignorable per spec — do **not** use `: shutdown` for control). Plan 8 edge client **must** register `addEventListener('shutdown', …)` (or equivalent) to stop reading and reconnect after drain. Control-plane: on SIGTERM/SIGINT, stop accepting new SSE; priority-send shutdown on each connection; flush with drain timeout (default 5 seconds); then close. SSE cleanup **before** `server.close()` and `pool.end()`.
     - Reconnection storm mitigation: `retry: <SYNC_SSE_POLL_INTERVAL_MS>\n` in the SSE preamble; edges use exponential backoff client-side.
     - v1 safety rails; Redis pub/sub (post-v1) changes scaling profile.
 13. **CI trust-engine requirement (new):** Plan 7 integration tests seed scores via `recomputeNow`, which requires a live trust-engine. CI already starts trust-engine as a sidecar (Plan 6 PR B). Plan 7 integration tests reuse this CI setup — no mocking. The `TRUST_ENGINE_ADDR` env var is mandatory in CI for these tests.
 14. **Snapshot-consistent high-water for cursor events:** each poll cycle must read tenant-filtered events **and** global high-water from the **same query or snapshot** (CTE or single statement). High-water is **`COALESCE(MAX(sync_version), 0)`** over `sync_events` (empty table → `0`, not SQL `NULL`). Use that value for cursor event `id`, comparisons, and serialization. This prevents skipped events and defines empty-table bootstrap behavior.
-15. **`Last-Event-ID` parsing:** accept header `Last-Event-ID` and query `?last_event_id=` as **raw strings** at the route/schema layer — **do not** declare the query field as `number` / coerce via Zod/`parseInt`/`Number` before validation (today’s `control-plane/src/routes/sync.ts` numeric query type must change). Header wins over query. Missing / empty after trim → `0` (bootstrap). In the handler, parse as a **non-negative integer** (`sync_version`) with **BigInt** or decimal-string compare for IDs > `Number.MAX_SAFE_INTEGER` — **never** `parseFloat` / JS number coercion that can round. Reject with **400 Bad Request**: negative values, non-numeric strings, decimals, empty after trim when provided, or out-of-range. Apply validation **before** backlog probe, 410/429 logic, or DB queries.
+15. **`Last-Event-ID` parsing:** accept header `Last-Event-ID` and query `?last_event_id=` as **raw strings** at the route/schema layer — **do not** declare the query field as `number` / coerce via Zod/`parseInt`/`Number` before validation (today’s `control-plane/src/routes/sync.ts` numeric query type must change). Header wins over query when the header is **present** (including a blank header). **Omitted both** (header absent and query key absent) → bootstrap `0`. **`Last-Event-ID: 0` / `?last_event_id=0`** → bootstrap `0`. **Supplied but blank** (header present and empty/whitespace after trim, or query key present with empty/whitespace value) → **`400 Bad Request`** — do **not** treat blank as omit. In the handler, parse non-blank values as a **non-negative integer** (`sync_version`) with **BigInt** or decimal-string compare for IDs > `Number.MAX_SAFE_INTEGER` — **never** `parseFloat` / JS number coercion that can round. Reject with **400**: negative, non-numeric, decimals, blank-when-provided, or out-of-range. Apply validation **before** backlog probe, 410/429 logic, or DB queries.
 16. **Edge client contract for non-stream HTTP errors (Plan 7 documents; Plan 8 implements):**
     - **`410 Gone`:** retention/pruned cursor only (when enabled). Edge: full snapshot + reconnect with new high-water.
     - **`429 Too Many Requests` + `Content-Type: application/problem+json`** (or `X-Verilink-Sync-Reason: backlog-cap`): backlog cap — **same recovery as snapshot refresh** (fetch snapshot, reconnect SSE with `Last-Event-ID` = snapshot `highWaterVersion`), but status code preserves HTTP semantics (“too much catch-up,” not “gone forever”).
     - **Known v1 limitation:** while the edge downloads/applies a snapshot after `429`/`410`, new commits may land; the snapshot’s `highWaterVersion` can lag live high-water briefly. The next SSE poll closes the gap. Document in Known risks; acceptable for v1.
+17. **Snapshot-consistent backlog probe + first batch:** the LIMIT+1 backlog-cap decision and the first event/high-water read **must share one Postgres snapshot** (`REPEATABLE READ` / single transaction / CTE). Do **not** probe, commit, then separately read — commits between them can grow the backlog after a passing probe. If the shared read shows more than `SYNC_SSE_MAX_INITIAL_BATCH` matching rows, respond **`429`** before sending SSE headers. Optionally re-check the cap immediately before headers if the TX already closed; never open the stream when the cap is exceeded.
 
 ---
 
@@ -103,17 +109,17 @@ What's missing:
 
 Rewrite `GET /v1/sync/events`:
 - Check active SSE connection count; if >= `SYNC_SSE_MAX_CONNECTIONS`, respond `503`.
-- Read `Last-Event-ID` / `?last_event_id` as **raw strings**; header wins. **Parse per Decision 15** (400 on invalid). Change route query schema from numeric to string.
+- Read `Last-Event-ID` / `?last_event_id` as **raw strings**; header wins when present. **Parse per Decision 15** (omit → `0`; blank-when-provided → `400`). Change route query schema from numeric to string.
 - **Never `410` for retention when cursor is `0`** (Decision 3); bootstrap still subject to backlog **`429`**.
 - If `last_event_id > 0` and pruning enabled and `last_event_id < retention_floor_version`: respond **`410 Gone`** (**Plan 7:** pruning disabled — skip in implementation and tests).
-- **Bounded backlog probe** before opening the stream: tenant-filtered rows with `sync_version > last_event_id` (bootstrap: `> 0`), `ORDER BY sync_version ASC LIMIT SYNC_SSE_MAX_INITIAL_BATCH + 1`. If more than `SYNC_SSE_MAX_INITIAL_BATCH` would match, respond **`429`** with problem+json / `X-Verilink-Sync-Reason: backlog-cap` (Decision 16) — do not open SSE.
+- **Probe + first batch in one snapshot (Decision 17):** tenant-filtered `sync_version > last_event_id` (bootstrap: `> 0`) with `ORDER BY sync_version ASC LIMIT SYNC_SSE_MAX_INITIAL_BATCH + 1` **and** `hw = COALESCE(MAX(sync_version), 0)` in the same TX/CTE. If more than `SYNC_SSE_MAX_INITIAL_BATCH` would match → **`429`** (Decision 16) — do not open SSE / do not send headers.
 - Set `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
-- Attach per-connection **data write queue** + **shutdown control lane** (Decision 12). Init `last_emitted_hw` / `last_written_hw` (Decision 11).
+- Attach per-connection **data write queue** (frame + byte caps) + **shutdown control lane** (Decision 12). Init `last_emitted_hw` / `last_written_hw` (Decision 11). Bind `edge_node_id` from authenticated principal only.
 - Write SSE preamble: `retry: <SYNC_SSE_POLL_INTERVAL_MS>\n\n`.
-- First read returns events (≤ `SYNC_SSE_MAX_INITIAL_BATCH`) plus `hw = COALESCE(MAX(sync_version), 0)` in the same CTE/statement (Decision 14). **Incrementally enqueue** frames with pause-on-full / resume-on-drain (Decision 12) — never dump > queue capacity at once. Advance `last_written_hw` as frames leave via `res.write`.
+- **Incrementally enqueue** the first-batch rows (≤ cap) with pause-on-full (frames **or** bytes) / resume-on-drain (Decision 12). Reject oversized durable frames per `SYNC_SSE_MAX_FRAME_BYTES`. Advance `last_written_hw` as frames leave via `res.write`.
 - **Bootstrap cursor (Decision 4):** after that first `hw` read, enqueue `event: cursor` with `id: <hw>` and set `last_emitted_hw = hw` (empty table → `id: 0`); advance `last_written_hw` when that frame is written.
-- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + `COALESCE(MAX(sync_version),0)` atomically; **incrementally enqueue** data frames; when `hw > last_emitted_hw`, enqueue cursor and update `last_emitted_hw`. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
-- On client disconnect (`req.on('close')`): best-effort monotonic `sync_cursors` upsert using **`last_written_hw`** (Decision 11), drain/close queue, clean up timers.
+- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + `COALESCE(MAX(sync_version),0)` atomically; **incrementally enqueue** data frames (frame + byte limits); when `hw > last_emitted_hw`, enqueue cursor and update `last_emitted_hw`. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
+- On client disconnect (`req.on('close')`): best-effort monotonic `sync_cursors` upsert for authenticated `edge_node_id` using **`last_written_hw`** (Decision 11), drain/close queue, clean up timers.
 - **req.socket.setNoDelay(true)** for minimal latency.
 
 ### Task 2: Heartbeat timer
@@ -130,6 +136,8 @@ Rewrite `GET /v1/sync/events`:
 - `SYNC_SSE_MAX_CONNECTIONS` (default 100)
 - `SYNC_SSE_MAX_INITIAL_BATCH` (default 10000)
 - `SYNC_SSE_WRITE_QUEUE_MAX` (default **1024**)
+- `SYNC_SSE_WRITE_QUEUE_MAX_BYTES` (default **8388608** — 8 MiB)
+- `SYNC_SSE_MAX_FRAME_BYTES` (default **1048576** — 1 MiB)
 - `SYNC_SSE_SLOW_CLIENT_MS` (default **60000** — milliseconds, 60 seconds)
 
 ### Task 4: Snapshot compression (revised)
@@ -146,10 +154,11 @@ Rewrite `GET /v1/sync/events`:
 - Seed bootstrap + attestation + recompute → connect SSE → assert `score.upsert` events arrive.
 - Assert `: ping` heartbeat within interval (including **empty `sync_events`**: heartbeats before any durable event).
 - Assert non-durable cursor event after batch, with `id` matching high-water.
-- Assert bootstrap: no `Last-Event-ID` (or `0`) on non-empty `sync_events` returns **200** stream, not **`410`** (retention).
+- Assert bootstrap: omitted `Last-Event-ID` (and omitted query) → **200** stream; explicit `0` → **200**; not **`410`** (retention).
 - Assert empty `sync_events`: stream starts; **bootstrap** cursor event has `id: 0`; **`: ping` arrives within heartbeat interval with zero durable events**.
-- Assert `400` for malformed `Last-Event-ID` (negative, non-numeric, fractional); oversized ID handled without precision loss.
-- Assert **`429`** when backlog > max initial batch (bootstrap `0` or resume cursor; probe uses LIMIT+1; problem body or backlog-cap header).
+- Assert `400` for malformed `Last-Event-ID` (negative, non-numeric, fractional); **supplied-blank header or query**; oversized ID handled without precision loss.
+- Assert **`429`** when backlog > max initial batch (bootstrap `0` or resume cursor; probe+first-batch same snapshot; problem body or backlog-cap header).
+- Assert **`413`** (or stream close) when a durable frame exceeds `SYNC_SSE_MAX_FRAME_BYTES` (unit acceptable).
 - **Deferred:** retention/pruned-cursor 410 tests until pruning ships (Decision 6).
 - Assert `503` when max connections exceeded.
 - Assert tenant filtering: tenant B does not receive tenant A `policy.replace`.
@@ -158,9 +167,10 @@ Rewrite `GET /v1/sync/events`:
 
 ### Task 6: Sync cursor tracking
 
+- Upserts and lag reporting use **`edge_node_id` from the authenticated edge principal only** (Decision 11) — never from client input.
 - **Periodic persistence:** every **60 seconds** or **100 durable sync events** written (whichever first; Decision 11), upsert `last_cursor = GREATEST(last_cursor, $last_written_hw)` where `$last_written_hw <= high_water`, in try/catch (failures logged).
 - On disconnect: same monotonic upsert from connection **`last_written_hw`**, best-effort + warning on failure.
-- Unit/integration: (a) client `Last-Event-ID` far ahead of `hw` does not inflate `sync_cursors`; (b) disconnect with frames still queued does **not** persist beyond `last_written_hw`.
+- Unit/integration: (a) client `Last-Event-ID` far ahead of `hw` does not inflate `sync_cursors`; (b) disconnect with frames still queued does **not** persist beyond `last_written_hw`; (c) client-supplied edge id is ignored.
 - Add `GET /v1/admin/sync/lag` (staff-only) returning per-edge lag = `high_water_version - last_cursor`.
 - Unit: initial backlog larger than queue depth drains without slow-client close when the client reads promptly (Decision 12 incremental production).
 
