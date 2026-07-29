@@ -6,7 +6,7 @@
 
 **Maps to:** productization design §4.5 steps 3–5, §13 step 11.
 
-**Review revisions (2026-07-29):** cursor event frequency tightened to every poll cycle; snapshot compression scoped to non-SSE routes only with flush strategy; snapshot-consistent high-water for cursor events; connection limits and backpressure noted; graceful shutdown for SSE draining; sync_cursors write hardened; CI trust-engine requirement explicit; bootstrap cursor `0` rule; poll-delivered wording; monotonic `sync_cursors`; per-connection SSE write backpressure; bounded initial-batch probe; strict `Last-Event-ID` parsing; empty-table `COALESCE` high-water; shutdown control-frame priority.
+**Review revisions (2026-07-29):** cursor event frequency tightened to every poll cycle; snapshot compression scoped to non-SSE routes only with flush strategy; snapshot-consistent high-water for cursor events; connection limits and backpressure noted; graceful shutdown for SSE draining; sync_cursors write hardened; CI trust-engine requirement explicit; bootstrap cursor `0` rule; poll-delivered wording; monotonic `sync_cursors`; per-connection SSE write backpressure; bounded initial-batch probe; strict `Last-Event-ID` parsing; empty-table `COALESCE` high-water; shutdown control-frame priority; bootstrap cursor emission on connect; persist `last_emitted_hw` only (no future client cursor).
 
 ---
 
@@ -31,6 +31,8 @@ All actionable comments from human review, CodeRabbit, and Qodo on PR #14 are lo
 | CodeRabbit | Shutdown frame must not be dropped when queue full | Decision 12; Task 7 |
 | CodeRabbit | Strict `Last-Event-ID` integer parsing | Decision 15; Task 1 |
 | CodeRabbit | Empty `sync_events` → high-water `0` | Decision 14; Task 1 |
+| CodeRabbit | Empty-table cursor vs “only when hw advances” | Decision 4 (bootstrap emission); Task 1; Task 5 |
+| CodeRabbit | Do not persist client `Last-Event-ID` ahead of high-water | Decision 11; Task 1; Task 6 |
 
 ---
 
@@ -59,14 +61,14 @@ What's missing:
    - **Bootstrap (never 410):** missing `Last-Event-ID`, `?last_event_id=0`, or header `Last-Event-ID: 0` means “start from the beginning.” Stream tenant-filtered events with `sync_version > 0`. A non-empty `sync_events` table with cursor `0` is valid and must **not** return 410.
    - **Retention / pruned cursor (deferred in Plan 7):** when event pruning ships, return 410 only if `last_event_id > 0` **and** `last_event_id < retention_floor_version` (oldest retained `sync_version`). **Do not** use `last_event_id < MIN(sync_version)` while pruning is disabled — that breaks bootstrap semantics.
    - **Backlog cap (Plan 7):** if `last_event_id > 0` and the tenant-filtered backlog **count** exceeds `SYNC_SSE_MAX_INITIAL_BATCH`, return `410 Gone` and force a full snapshot refresh. **Detection must use a bounded probe** (`LIMIT SYNC_SSE_MAX_INITIAL_BATCH + 1` with tenant predicate) — never load an unbounded backlog into memory (bootstrap `0` on a large table is especially dangerous).
-4. **Non-durable cursor events (revised):** to advance `Last-Event-ID` across tenant-filtered gaps, the stream sends `event: cursor\nid: <high_water_version>\ndata: {}\n\n`. This is SSE-only — no row in `sync_events`. **Frequency: on every poll cycle where high-water has advanced since last emitted cursor** (not just during heartbeats). This keeps `Last-Event-ID` within one poll interval of the true high-water, regardless of whether durable events were tenant-visible.
+4. **Non-durable cursor events (revised):** to advance `Last-Event-ID` across tenant-filtered gaps, the stream sends `event: cursor\nid: <high_water_version>\ndata: {}\n\n`. This is SSE-only — no row in `sync_events`. Track **`last_emitted_hw`** per connection. **Bootstrap:** immediately after the first snapshot-consistent `hw` read on connect (Decision 14), emit one cursor with `id: <hw>` — including `id: 0` when `sync_events` is empty — then set `last_emitted_hw = hw`. **Ongoing:** on every poll cycle where `hw > last_emitted_hw`, emit a cursor and set `last_emitted_hw = hw` (not only during heartbeats). This keeps `Last-Event-ID` within one poll interval of the true high-water, regardless of whether durable events were tenant-visible.
 5. **Per-tenant filtering:** `score.upsert`, `score.delete`, `key.upsert`, `key.revoke` → all tenants. `policy.replace` → only the owning tenant. This is the existing repository filter.
 6. **Event pruning:** not in scope for Plan 7. Events accumulate. Pruning (+ `410 Gone` enforcement) can be added in a follow-up once retention policy is set.
 7. **No Redis** in Plan 7. The SSE stream polls Postgres. A Redis pub/sub notify layer for instant push can be added post-v1 when connection count warrants it.
 8. **Polling interval for new events:** configurable, default **5 seconds**. The SSE handler polls `sync_events WHERE sync_version > $cursor` on a timer. Worst-case latency from commit to edge-visible bytes is one poll interval (plus network), unless post-v1 notify is added.
 9. **Snapshot compression (revised):** `GET /v1/sync/snapshot` supports gzip via `Accept-Encoding`. **Compression middleware must be scoped to the snapshot route only** — it must **not** wrap the SSE `/v1/sync/events` response. SSE responses must not be compressed (buffering breaks heartbeat freshness guarantees). For snapshot, use `compression({ flush: zlib.Z_SYNC_FLUSH })` so large snapshot payloads stream without excessive buffering.
 10. **Edge sync client (Go):** deferred to Plan 8 / step 12. Plan 7 delivers the control-plane streaming endpoint; the Go edge client consumes it in the next step.
-11. **`sync_cursors` persistence:** the control-plane writes `last_cursor` per edge_node on connect, periodically (every 60s or 100 events), and on disconnect (best-effort). **All upserts must be monotonic:** `last_cursor = GREATEST(sync_cursors.last_cursor, EXCLUDED.last_cursor)` so overlapping reconnects or out-of-order periodic/disconnect writes cannot regress lag metrics. Failures are logged as warnings, not thrown. Informational for Plan 7 (monitor lag); stream resume uses edge `Last-Event-ID`, not this table.
+11. **`sync_cursors` persistence:** the control-plane writes `last_cursor` per edge_node periodically (every 60s or 100 events) and on disconnect (best-effort). **Persist only server-observed progress** — the connection’s `last_emitted_hw` (and durable events applied on the stream), **never** a raw client `Last-Event-ID` that exceeds current global `high_water` (avoids negative lag / “future cursor” stuck via `GREATEST`). **All upserts must be monotonic:** `last_cursor = GREATEST(sync_cursors.last_cursor, EXCLUDED.last_cursor)` with `EXCLUDED.last_cursor <= high_water` at write time. Failures are logged as warnings, not thrown. Informational for Plan 7 (monitor lag); stream resume uses edge `Last-Event-ID`, not this table.
 12. **Connection limits and backpressure:**
     - Configurable max concurrent SSE connections per control-plane instance: `SYNC_SSE_MAX_CONNECTIONS` (default 100). New connections beyond this limit receive `503 Service Unavailable`.
     - Initial batch cap: bounded probe as in Decision 3; 410 when count > `SYNC_SSE_MAX_INITIAL_BATCH`.
@@ -93,10 +95,10 @@ Rewrite `GET /v1/sync/events`:
 - Set `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
 - Attach per-connection **bounded write queue** (Decision 12) with **shutdown slot reserved**; data frames, heartbeats, and cursor events use the data queue.
 - Write SSE preamble: `retry: <SYNC_SSE_POLL_INTERVAL_MS>\n\n`.
-- Flush initial batch from the bounded probe result (at most `SYNC_SSE_MAX_INITIAL_BATCH` rows). Poll query returns events plus `hw = COALESCE(MAX(sync_version), 0)` in the same CTE/statement (Decision 14).
-- After each batch: if `hw` advanced, send non-durable cursor event with `id: <hw>`.
-- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + `COALESCE(MAX(sync_version),0)` atomically, enqueue data frames, send cursor when `hw` advanced. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
-- On client disconnect (`req.on('close')`): best-effort monotonic `sync_cursors` update, drain/close queue, clean up timers.
+- Flush initial batch from the bounded probe result (at most `SYNC_SSE_MAX_INITIAL_BATCH` rows). First poll/read returns events plus `hw = COALESCE(MAX(sync_version), 0)` in the same CTE/statement (Decision 14).
+- **Bootstrap cursor (Decision 4):** after that first `hw` read, emit `event: cursor` with `id: <hw>` and set `last_emitted_hw = hw` (empty table → `id: 0`).
+- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + `COALESCE(MAX(sync_version),0)` atomically, enqueue data frames; when `hw > last_emitted_hw`, emit cursor and update `last_emitted_hw`. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
+- On client disconnect (`req.on('close')`): best-effort monotonic `sync_cursors` upsert using **`last_emitted_hw`** (Decision 11), drain/close queue, clean up timers.
 - **req.socket.setNoDelay(true)** for minimal latency.
 
 ### Task 2: Heartbeat timer
@@ -130,7 +132,7 @@ Rewrite `GET /v1/sync/events`:
 - Assert `: ping` heartbeat within interval.
 - Assert non-durable cursor event after batch, with `id` matching high-water.
 - Assert bootstrap: no `Last-Event-ID` (or `0`) on non-empty `sync_events` returns **200** stream, not 410.
-- Assert empty `sync_events`: stream starts, cursor events use `id: 0` (COALESCE high-water).
+- Assert empty `sync_events`: stream starts; **bootstrap** cursor event has `id: 0` (Decision 4 + Decision 14).
 - Assert `400` for malformed `Last-Event-ID` (negative, non-numeric, fractional); oversized ID handled without precision loss.
 - Assert `410 Gone` when backlog > max initial batch (seed or lower config; probe uses LIMIT+1).
 - **Deferred:** retention/pruned-cursor 410 tests until pruning ships (Decision 6).
@@ -141,9 +143,9 @@ Rewrite `GET /v1/sync/events`:
 
 ### Task 6: Sync cursor tracking
 
-- On SSE connect: upsert `sync_cursors` with initial cursor (`GREATEST` monotonic update).
-- **Periodic persistence:** every 60 seconds or 100 events (whichever first), `UPDATE ... SET last_cursor = GREATEST(last_cursor, $new)` in try/catch (failures logged).
-- On disconnect: same monotonic upsert, best-effort + warning on failure.
+- **Periodic persistence:** every 60 seconds or 100 events (whichever first), upsert `last_cursor = GREATEST(last_cursor, $last_emitted_hw)` where `$last_emitted_hw <= high_water` (Decision 11), in try/catch (failures logged).
+- On disconnect: same monotonic upsert from connection `last_emitted_hw`, best-effort + warning on failure.
+- Unit/integration: client `Last-Event-ID` far ahead of `hw` does not inflate `sync_cursors.last_cursor` until the stream emits that position.
 - Add `GET /v1/admin/sync/lag` (staff-only) returning per-edge lag = `high_water_version - last_cursor`.
 
 ### Task 7: SSE connection lifecycle + graceful shutdown
