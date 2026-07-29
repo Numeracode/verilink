@@ -58,6 +58,26 @@ export async function seedSubject(pool: pg.Pool, tenantId: string): Promise<{ id
   return { id };
 }
 
+/** Mark an existing issuer as a bootstrap root for score recompute tests. */
+export async function seedBootstrapIssuer(
+  pool: pg.Pool,
+  principalId: string,
+  opts: { name?: string; weight?: number } = {}
+): Promise<void> {
+  const weight = opts.weight ?? 1.0;
+  await pool.query(`UPDATE issuers SET is_bootstrap = true WHERE principal_id = $1`, [
+    principalId,
+  ]);
+  await pool.query(
+    `INSERT INTO bootstrap_issuers (principal_id, name, current_weight)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (principal_id) DO UPDATE SET
+       name = EXCLUDED.name,
+       current_weight = EXCLUDED.current_weight`,
+    [principalId, opts.name ?? 'test-bootstrap', weight]
+  );
+}
+
 /** Creates a vrl_ API key (68 chars) with HMAC hash matching auth middleware. */
 export async function seedApiKey(
   pool: pg.Pool,
@@ -90,8 +110,13 @@ export async function signAttestationToken(opts: {
   trustLevelDelta?: number;
   attestationType?: string;
   facts?: Record<string, unknown>;
+  /** Unix seconds; defaults to now. */
+  issuedAtUnix?: number;
+  /** Unix seconds; defaults to issuedAt+3600. Pass 0 to omit JWT exp (DB may still set expires). */
+  expiresAtUnix?: number;
 }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
+  const issuedAt = opts.issuedAtUnix ?? now;
   const facts = opts.facts ?? {
     start: new Date(Date.now() - 3600_000).toISOString(),
     end: new Date().toISOString(),
@@ -100,7 +125,7 @@ export async function signAttestationToken(opts: {
     dispute_count: 0,
   };
 
-  return new SignJWT({
+  let builder = new SignJWT({
     vli: {
       type: opts.attestationType ?? 'transaction_summary',
       facts,
@@ -112,8 +137,12 @@ export async function signAttestationToken(opts: {
     .setProtectedHeader({ alg: 'EdDSA', kid: opts.keyId })
     .setIssuer(opts.issuerId)
     .setSubject(opts.subjectId)
-    .setIssuedAt(now)
-    .setExpirationTime(now + 3600)
-    .setJti(crypto.randomUUID())
-    .sign(opts.privateKey);
+    .setIssuedAt(issuedAt)
+    .setJti(crypto.randomUUID());
+
+  if (opts.expiresAtUnix !== 0) {
+    builder = builder.setExpirationTime(opts.expiresAtUnix ?? issuedAt + 3600);
+  }
+
+  return builder.sign(opts.privateKey);
 }
