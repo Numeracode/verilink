@@ -64,6 +64,18 @@ describe('SseWriteQueue', () => {
     q.close();
   });
 
+  it('rejects frames that exceed maxBytes even if under maxFrameBytes', () => {
+    const res = mockRes();
+    const q = new SseWriteQueue(res, {
+      maxFrames: 10,
+      maxBytes: 20,
+      maxFrameBytes: 100,
+      slowClientMs: 60_000,
+    });
+    assert.equal(q.enqueueData('x'.repeat(30)), 'oversized');
+    q.close();
+  });
+
   it('tracks lastWrittenCursor after successful write', async () => {
     const res = mockRes();
     const q = new SseWriteQueue(res, {

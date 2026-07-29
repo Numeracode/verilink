@@ -65,4 +65,10 @@ describe('parseLastEventId', () => {
     assert.equal(r.ok, true);
     if (r.ok) assert.equal(r.value, BigInt(big));
   });
+
+  it('rejects values above Postgres BIGINT max', () => {
+    const tooBig = '9223372036854775808';
+    const r = parseLastEventId({ headerPresent: true, header: tooBig });
+    assert.equal(r.ok, false);
+  });
 });

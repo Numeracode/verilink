@@ -1,6 +1,9 @@
 // control-plane/src/domains/sync/parseLastEventId.ts
 /** Decision 15: raw-string Last-Event-ID / last_event_id parsing. */
 
+/** Postgres signed BIGINT max (sync_events.sync_version). */
+export const PG_BIGINT_MAX = 9223372036854775807n;
+
 export type ParseLastEventIdOk = { ok: true; value: bigint };
 export type ParseLastEventIdErr = { ok: false; message: string };
 export type ParseLastEventIdResult = ParseLastEventIdOk | ParseLastEventIdErr;
@@ -29,11 +32,16 @@ function parseNonNegativeInteger(raw: string): ParseLastEventIdResult {
   if (!/^\d+$/.test(trimmed)) {
     return { ok: false, message: 'last_event_id must be a non-negative integer' };
   }
+  let value: bigint;
   try {
-    return { ok: true, value: BigInt(trimmed) };
+    value = BigInt(trimmed);
   } catch {
     return { ok: false, message: 'last_event_id is out of range' };
   }
+  if (value > PG_BIGINT_MAX) {
+    return { ok: false, message: 'last_event_id is out of range' };
+  }
+  return { ok: true, value };
 }
 
 /**

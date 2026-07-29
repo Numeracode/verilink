@@ -17,12 +17,19 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       reject(new Error('aborted'));
       return;
     }
-    const t = setTimeout(resolve, ms);
+    const t = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
     const onAbort = () => {
       clearTimeout(t);
+      cleanup();
       reject(new Error('aborted'));
     };
-    signal.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort);
   });
 }
 
@@ -160,10 +167,22 @@ export async function runSseSession(opts: {
   try {
     while (!abort.signal.aborted) {
       await sleep(sse.pollIntervalMs, abort.signal);
+      const pollStarted = Date.now();
       const { events, highWater } = await syncRepo.getPollBatchWithHighWater(
         lastEmittedHw,
         tenantId,
         sse.maxInitialBatch
+      );
+      const pollMs = Date.now() - pollStarted;
+      logger.debug(
+        {
+          sseConn: conn.id,
+          pollMs,
+          eventCount: events.length,
+          highWater: highWater.toString(),
+          activeConnections: registry.size,
+        },
+        'SSE poll cycle'
       );
       for (const ev of events) {
         const { frame, cursor, size } = eventFrame(ev);

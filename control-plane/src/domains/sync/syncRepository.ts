@@ -5,7 +5,8 @@ import { pool, withTransaction } from '../../db/transaction.js';
 export const SYNC_VERSION_LOCK_KEY = 8392018;
 
 export interface SyncEvent {
-  sync_version: number;
+  /** Postgres BIGINT — node-pg returns int8 as string unless a type parser is set. */
+  sync_version: string | number;
   event_type: string;
   principal_id: string | null;
   tenant_id: string | null;
@@ -27,7 +28,7 @@ export async function appendEventWithClient(
      RETURNING sync_version`,
     [eventType, opts.principalId || null, opts.tenantId || null, JSON.stringify(payload)]
   );
-  return parseInt(rows[0].sync_version, 10);
+  return Number(rows[0].sync_version);
 }
 
 export async function appendEvent(
@@ -50,11 +51,10 @@ export async function getEventsSince(
   let query = 'SELECT * FROM sync_events WHERE sync_version > $1';
   const params: unknown[] = [sinceVersion.toString()];
 
+  // With tenant: global (NULL) + that tenant. Without: all events (no tenant filter).
   if (tenantId) {
     query += ' AND (tenant_id IS NULL OR tenant_id = $2)';
     params.push(tenantId);
-  } else {
-    query += ' AND tenant_id IS NULL';
   }
 
   query += ' ORDER BY sync_version ASC';
@@ -69,13 +69,53 @@ export async function getEventsSince(
 
 export async function getHighWaterVersion(): Promise<number> {
   const { rows } = await pool.query('SELECT COALESCE(MAX(sync_version), 0) as hw FROM sync_events');
-  return parseInt(rows[0].hw, 10);
+  return Number(rows[0].hw);
 }
 
 export interface InitialBatchResult {
   events: SyncEvent[];
   highWater: bigint;
   backlogExceeded: boolean;
+}
+
+async function fetchEventsAndHighWaterInSnapshot(
+  sinceVersion: bigint,
+  tenantId: string | undefined,
+  fetchLimit: number
+): Promise<{ events: SyncEvent[]; highWater: bigint }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+
+    let eventsQuery = 'SELECT * FROM sync_events WHERE sync_version > $1';
+    const params: unknown[] = [sinceVersion.toString()];
+    if (tenantId) {
+      eventsQuery += ' AND (tenant_id IS NULL OR tenant_id = $2)';
+      params.push(tenantId);
+    }
+    eventsQuery += ` ORDER BY sync_version ASC LIMIT $${params.length + 1}`;
+    params.push(fetchLimit);
+
+    const eventsResult = await client.query(eventsQuery, params);
+    const hwResult = await client.query(
+      'SELECT COALESCE(MAX(sync_version), 0) as hw FROM sync_events'
+    );
+    await client.query('COMMIT');
+
+    return {
+      events: eventsResult.rows,
+      highWater: BigInt(String(hwResult.rows[0].hw)),
+    };
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -87,47 +127,17 @@ export async function getInitialBatchWithHighWater(
   tenantId: string | undefined,
   maxBatch: number
 ): Promise<InitialBatchResult> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-
-    let eventsQuery = 'SELECT * FROM sync_events WHERE sync_version > $1';
-    const params: unknown[] = [sinceVersion.toString()];
-    if (tenantId) {
-      eventsQuery += ' AND (tenant_id IS NULL OR tenant_id = $2)';
-      params.push(tenantId);
-    } else {
-      eventsQuery += ' AND tenant_id IS NULL';
-    }
-    eventsQuery += ` ORDER BY sync_version ASC LIMIT $${params.length + 1}`;
-    params.push(maxBatch + 1);
-
-    const eventsResult = await client.query(eventsQuery, params);
-    const hwResult = await client.query(
-      'SELECT COALESCE(MAX(sync_version), 0) as hw FROM sync_events'
-    );
-    await client.query('COMMIT');
-
-    const backlogExceeded = eventsResult.rows.length > maxBatch;
-    const events = backlogExceeded
-      ? eventsResult.rows.slice(0, maxBatch)
-      : eventsResult.rows;
-
-    return {
-      events,
-      highWater: BigInt(hwResult.rows[0].hw),
-      backlogExceeded,
-    };
-  } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {
-      /* ignore */
-    }
-    throw err;
-  } finally {
-    client.release();
-  }
+  const { events, highWater } = await fetchEventsAndHighWaterInSnapshot(
+    sinceVersion,
+    tenantId,
+    maxBatch + 1
+  );
+  const backlogExceeded = events.length > maxBatch;
+  return {
+    events: backlogExceeded ? events.slice(0, maxBatch) : events,
+    highWater,
+    backlogExceeded,
+  };
 }
 
 /**
@@ -138,39 +148,5 @@ export async function getPollBatchWithHighWater(
   tenantId: string | undefined,
   limit: number
 ): Promise<{ events: SyncEvent[]; highWater: bigint }> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-
-    let eventsQuery = 'SELECT * FROM sync_events WHERE sync_version > $1';
-    const params: unknown[] = [sinceVersion.toString()];
-    if (tenantId) {
-      eventsQuery += ' AND (tenant_id IS NULL OR tenant_id = $2)';
-      params.push(tenantId);
-    } else {
-      eventsQuery += ' AND tenant_id IS NULL';
-    }
-    eventsQuery += ` ORDER BY sync_version ASC LIMIT $${params.length + 1}`;
-    params.push(limit);
-
-    const eventsResult = await client.query(eventsQuery, params);
-    const hwResult = await client.query(
-      'SELECT COALESCE(MAX(sync_version), 0) as hw FROM sync_events'
-    );
-    await client.query('COMMIT');
-
-    return {
-      events: eventsResult.rows,
-      highWater: BigInt(hwResult.rows[0].hw),
-    };
-  } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {
-      /* ignore */
-    }
-    throw err;
-  } finally {
-    client.release();
-  }
+  return fetchEventsAndHighWaterInSnapshot(sinceVersion, tenantId, limit);
 }

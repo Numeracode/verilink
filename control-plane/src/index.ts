@@ -41,7 +41,7 @@ async function main() {
     const forceExit = setTimeout(() => {
       logger.error('Forced shutdown after timeout');
       process.exit(1);
-    }, 10000);
+    }, config.syncSse.shutdownDrainMs + 5000);
     try {
       await getSseRegistry().shutdownAll(config.syncSse.shutdownDrainMs);
     } catch (err) {
