@@ -73,7 +73,23 @@ async function writeChunk(
   chunk: unknown
 ): Promise<void> {
   if (call.write(chunk)) return;
-  await once(call, 'drain');
+  // Race drain against stream failure — otherwise a closed stream hangs forever.
+  await Promise.race([
+    once(call, 'drain'),
+    once(call, 'error').then(([err]) => {
+      throw err instanceof Error ? err : new Error(String(err));
+    }),
+    once(call, 'close').then(() => {
+      throw new Error('gRPC stream closed before drain');
+    }),
+  ]);
+}
+
+function deadlineForGraph(graph: AttestationGraph): Date {
+  const n = graph.principals.length + graph.roots.length + graph.attestations.length;
+  // Base 60s + 5ms per streamed chunk, capped at 10 minutes.
+  const ms = Math.min(600_000, 60_000 + n * 5);
+  return new Date(Date.now() + ms);
 }
 
 function isRetryableGrpcError(err: unknown): boolean {
@@ -126,7 +142,7 @@ export function runVeriRank(
       fn();
     };
 
-    const deadline = new Date(Date.now() + 60_000);
+    const deadline = deadlineForGraph(graph);
     // First argument must be Metadata (not a plain {}), or grpc-js rejects the call.
     const metadata = new grpc.Metadata();
     const call = client.RunVeriRank(

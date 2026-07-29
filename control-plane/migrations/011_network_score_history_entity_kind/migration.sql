@@ -1,4 +1,5 @@
 -- Retain entity_kind on score history so kind-only changes are auditable.
+-- Validate a NOT NULL CHECK first so SET NOT NULL can skip a redundant scan.
 
 ALTER TABLE network_score_history
   ADD COLUMN entity_kind TEXT;
@@ -24,7 +25,17 @@ BEGIN
 END $$;
 
 ALTER TABLE network_score_history
+  ADD CONSTRAINT network_score_history_entity_kind_not_null
+  CHECK (entity_kind IS NOT NULL) NOT VALID;
+
+ALTER TABLE network_score_history
+  VALIDATE CONSTRAINT network_score_history_entity_kind_not_null;
+
+ALTER TABLE network_score_history
   ALTER COLUMN entity_kind SET NOT NULL;
+
+ALTER TABLE network_score_history
+  DROP CONSTRAINT network_score_history_entity_kind_not_null;
 
 ALTER TABLE network_score_history
   ADD CONSTRAINT network_score_history_entity_kind_check
