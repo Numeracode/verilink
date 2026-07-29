@@ -134,6 +134,10 @@ export async function resetTestData(pool: pg.Pool): Promise<void> {
   assertSafeVerilinkTestDb(url);
   await pool.query(`
     TRUNCATE
+      sync_events,
+      network_score_history,
+      network_scores,
+      bootstrap_issuers,
       attestations,
       principal_keys,
       issuers,

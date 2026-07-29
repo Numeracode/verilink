@@ -16,6 +16,11 @@ export async function startControlPlane(
 ): Promise<ControlPlaneHarness> {
   // Dynamic import so config freezes after env is configured by the caller.
   const { createApp } = await import('../app.js');
+  const { pool, recreatePool } = await import('../db/client.js');
+  // Prior suite may have ended the singleton pool in stop().
+  if (pool.ended) {
+    recreatePool();
+  }
   const app: Express = createApp();
 
   const server: Server = createServer(app);
@@ -34,8 +39,10 @@ export async function startControlPlane(
         server.close((err) => (err ? reject(err) : resolve()));
       });
       // End the singleton app pool so node:test can exit cleanly.
-      const { pool } = await import('../db/client.js');
-      await pool.end();
+      const { pool: livePool } = await import('../db/client.js');
+      if (!livePool.ended) {
+        await livePool.end();
+      }
     },
   };
 }

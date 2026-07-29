@@ -7,6 +7,7 @@ export { pool };
 /**
  * Execute work inside a transaction. The client is automatically released
  * (even if work throws). Commit happens only if work returns without error.
+ * Uses the live `pool` export so recreatePool() is visible after suite teardown.
  */
 export async function withTransaction<T>(
   work: (client: pg.PoolClient) => Promise<T>

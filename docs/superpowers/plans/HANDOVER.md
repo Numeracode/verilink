@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-29  
-> **Repo HEAD:** `main` @ Plan 6 docs merged (PR #11)  
-> **Status:** Plans 1–5 + Plan 6 plan doc on `main`. Implementing Plan 6 **PR A** (loader/writer/gRPC/migrations)  
-> **Next session:** Finish/land Plan 6 PR A then PR B (scheduler + mandatory CI trust-engine)
+> **Repo HEAD:** `main` @ Plan 6 PR A merged (PR #12)  
+> **Status:** Plan 6 PR A on `main`. Implementing Plan 6 **PR B** (scheduler + ingest hook + mandatory CI trust-engine)  
+> **Next session:** Land Plan 6 PR B → Plan 6 complete → Plan 7 (SSE / edge sync)
 
 ---
 
@@ -15,7 +15,7 @@ VeriLink is past the “toolkit only” MVP. The monorepo now has:
 |---------|----------|--------|
 | Trust engine (gRPC) | `cmd/trust-engine`, `internal/trustengine` | `RunVeriRank`, `VerifyAttestation`, `GetFingerprint` |
 | Edge verifier | `cmd/edge-verifier`, `internal/edgeverifier` | RFC 9421 three-way outcomes + trust annotations |
-| Control plane (TS) | `control-plane/` | Express + Postgres; attestation ingest E2E |
+| Control plane (TS) | `control-plane/` | Express + Postgres; attestation ingest E2E; score writer (PR A) |
 | Clients | `client/go`, `client/node` | Signing helpers present |
 | Proto | `proto/verilink/trust/v1/trust.proto` → `pkg/trustpb` | Buf pipeline in CI |
 
@@ -58,13 +58,13 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 6 — Network score computation — READY TO EXECUTE
+## Plan 6 — Network score computation — IN PROGRESS
 
 - Plan doc: `docs/superpowers/plans/2026-07-28-network-score-computation.md`
 - Design: §4.5 + §13 step 10
-- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns + API `[0,1]`; `entity_kind` on history + change detection (`score`/`blacklisted`/`score_reason`/`entity_kind`); PR B mandatory live-engine CI
-- Review closure matrix lives in the Plan 6 doc (human + CodeRabbit + Qodo)
-- Suggested split: **PR A** migrations/loader/writer/gRPC client + units; **PR B** scheduler + ingest hook + mandatory CI trust-engine integration
+- **PR A (merged #12):** migrations `009`–`012`, loader (expiry + active principals + shared `evaluationTime`), writer (`pg_advisory_xact_lock`, history `entity_kind`), empty-roots cold-start vs clear-stale, live gRPC `RunVeriRank` client + units
+- **PR B (this branch):** single-flight `RecomputeScheduler` (deterministic stop), ingest `markDirty`, `index.ts` start/stop, mandatory CI trust-engine + `score-recompute` integration
+- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns + API `[0,1]`; `entity_kind` on history + change detection; PR B mandatory live-engine CI
 
 ### What’s after Plan 6 (§13)
 
@@ -87,7 +87,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-2-control-plane-foundation.md` | Plan 2 (detailed) |
 | `docs/superpowers/plans/2026-07-27-verilink-3-request-auth-protocol.md` | Plan 3 |
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
-| `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 (next) |
+| `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
@@ -106,6 +106,7 @@ go test -tags=integration -count=1 ./...
 # Control plane
 cd control-plane && npm run test:unit
 # Needs local Postgres verilink_test (default URL uses 127.0.0.1:15432)
+# Score recompute integration also needs: go run ./cmd/trust-engine && TRUST_ENGINE_ADDR=127.0.0.1:9091
 cd control-plane && npm run test:integration
 
 # Edge / trust-engine local

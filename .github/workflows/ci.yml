@@ -144,12 +144,37 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: control-plane/package-lock.json
+
+      - name: Build trust-engine
+        working-directory: .
+        run: go build -o /tmp/verilink-trust-engine ./cmd/trust-engine
+
+      - name: Start trust-engine
+        working-directory: .
+        run: |
+          /tmp/verilink-trust-engine -grpc-port 9091 -http-port 8086 &
+          echo $! > /tmp/verilink-trust-engine.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8086/healthz >/dev/null; then
+              echo "trust-engine healthy"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "trust-engine failed to become healthy" >&2
+          exit 1
 
       - name: Install dependencies
         run: npm ci
@@ -158,4 +183,14 @@ jobs:
         env:
           DATABASE_URL: postgresql://verilink:verilink@127.0.0.1:5432/verilink_test
           API_KEY_HMAC_SECRET: test-hmac-secret-for-integration
+          TRUST_ENGINE_ADDR: 127.0.0.1:9091
+          CI: "true"
         run: npm run test:integration
+
+      - name: Stop trust-engine
+        if: always()
+        working-directory: .
+        run: |
+          if [ -f /tmp/verilink-trust-engine.pid ]; then
+            kill "$(cat /tmp/verilink-trust-engine.pid)" || true
+          fi

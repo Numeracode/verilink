@@ -9,6 +9,7 @@ import { isV0AllowedForIssuer } from './legacyConfig.js';
 import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClient.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
+import { getRecomputeScheduler } from '../graph/recomputeScheduler.js';
 
 function sha256hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -183,7 +184,7 @@ export async function submitAttestation(opts: {
 
   // 10. Store attestation transactionally with concurrency-safe dedup + observation_id pairing
   try {
-    return await withTransaction(async (client) => {
+    const row = await withTransaction(async (client) => {
       // Dedup check inside transaction
       const existing = await attestationRepo.findByTokenDigest(tokenDigest, client);
       if (existing) {
@@ -230,6 +231,9 @@ export async function submitAttestation(opts: {
         verifiedKeyId: verifyResult.verifiedKeyId!,
       }, client);
     });
+    // Plan 6: enqueue score recompute after durable ingest (outside TX).
+    getRecomputeScheduler().markDirty();
+    return row;
   } catch (err: any) {
     if (err instanceof AppError) throw err;
     if (err.code === '23505') {

@@ -3,6 +3,7 @@ import { pool } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { createApp } from './app.js';
 import { logger } from './shared/logger.js';
+import { getRecomputeScheduler } from './domains/graph/recomputeScheduler.js';
 
 async function main() {
   // Validate config
@@ -12,6 +13,16 @@ async function main() {
   // Run migrations
   logger.info('Running migrations...');
   await runMigrations();
+
+  const scheduler = getRecomputeScheduler();
+  scheduler.start();
+  logger.info(
+    {
+      debounceMs: config.scoreRecompute.debounceMs,
+      intervalMs: config.scoreRecompute.intervalMs,
+    },
+    'Score recompute scheduler started'
+  );
 
   // Create and start server
   const app = createApp();
@@ -25,6 +36,11 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info('Shutting down...');
+    try {
+      await scheduler.stop();
+    } catch (err) {
+      logger.error({ err }, 'score recompute scheduler stop failed');
+    }
     server.close(async () => {
       await pool.end();
       logger.info('Bye.');
