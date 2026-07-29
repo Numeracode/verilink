@@ -1,5 +1,5 @@
 -- Align weight columns with trust-engine gRPC bounds [0,1].
--- Add+validate replacement CHECKs before dropping the live >=0 constraints.
+-- Add replacement CHECKs as NOT VALID only — VALIDATE + swap happen in 012.
 
 DO $$
 BEGIN
@@ -21,14 +21,7 @@ END $$;
 ALTER TABLE issuers
   ADD CONSTRAINT issuers_trust_weight_check_v2
   CHECK (trust_weight >= 0 AND trust_weight <= 1) NOT VALID;
-ALTER TABLE issuers VALIDATE CONSTRAINT issuers_trust_weight_check_v2;
-ALTER TABLE issuers DROP CONSTRAINT issuers_trust_weight_check;
-ALTER TABLE issuers RENAME CONSTRAINT issuers_trust_weight_check_v2 TO issuers_trust_weight_check;
 
 ALTER TABLE bootstrap_issuers
   ADD CONSTRAINT bootstrap_issuers_current_weight_check_v2
   CHECK (current_weight >= 0 AND current_weight <= 1) NOT VALID;
-ALTER TABLE bootstrap_issuers VALIDATE CONSTRAINT bootstrap_issuers_current_weight_check_v2;
-ALTER TABLE bootstrap_issuers DROP CONSTRAINT bootstrap_issuers_current_weight_check;
-ALTER TABLE bootstrap_issuers
-  RENAME CONSTRAINT bootstrap_issuers_current_weight_check_v2 TO bootstrap_issuers_current_weight_check;

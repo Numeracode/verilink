@@ -1,5 +1,6 @@
 -- Retain entity_kind on score history so kind-only changes are auditable.
--- Validate a NOT NULL CHECK first so SET NOT NULL can skip a redundant scan.
+-- Add NOT VALID checks only — VALIDATE / SET NOT NULL happen in 012
+-- (separate transaction) so validation scans do not extend this migration's lock.
 
 ALTER TABLE network_score_history
   ADD COLUMN entity_kind TEXT;
@@ -29,17 +30,5 @@ ALTER TABLE network_score_history
   CHECK (entity_kind IS NOT NULL) NOT VALID;
 
 ALTER TABLE network_score_history
-  VALIDATE CONSTRAINT network_score_history_entity_kind_not_null;
-
-ALTER TABLE network_score_history
-  ALTER COLUMN entity_kind SET NOT NULL;
-
-ALTER TABLE network_score_history
-  DROP CONSTRAINT network_score_history_entity_kind_not_null;
-
-ALTER TABLE network_score_history
   ADD CONSTRAINT network_score_history_entity_kind_check
   CHECK (entity_kind IN ('agent', 'issuer', 'both')) NOT VALID;
-
-ALTER TABLE network_score_history
-  VALIDATE CONSTRAINT network_score_history_entity_kind_check;

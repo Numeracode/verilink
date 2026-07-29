@@ -1,7 +1,6 @@
 // control-plane/src/grpc/runVeriRankClient.ts
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { once } from 'node:events';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { config } from '../config.js';
@@ -68,21 +67,43 @@ function mapRoot(r: GraphRoot) {
   };
 }
 
+/**
+ * Wait for backpressure to clear without leaking listeners.
+ * `once()` + `Promise.race` leaves the losing handlers attached; this cleans up.
+ */
+export function waitForDrainOrFailure(
+  call: NodeJS.EventEmitter
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (err: unknown) => {
+      cleanup();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('gRPC stream closed before drain'));
+    };
+    const cleanup = () => {
+      call.off('drain', onDrain);
+      call.off('error', onError);
+      call.off('close', onClose);
+    };
+    call.on('drain', onDrain);
+    call.on('error', onError);
+    call.on('close', onClose);
+  });
+}
+
 async function writeChunk(
   call: grpc.ClientWritableStream<unknown>,
   chunk: unknown
 ): Promise<void> {
   if (call.write(chunk)) return;
-  // Race drain against stream failure — otherwise a closed stream hangs forever.
-  await Promise.race([
-    once(call, 'drain'),
-    once(call, 'error').then(([err]) => {
-      throw err instanceof Error ? err : new Error(String(err));
-    }),
-    once(call, 'close').then(() => {
-      throw new Error('gRPC stream closed before drain');
-    }),
-  ]);
+  await waitForDrainOrFailure(call);
 }
 
 function deadlineForGraph(graph: AttestationGraph): Date {
