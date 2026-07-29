@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
-> **Updated:** 2026-07-28  
-> **Repo HEAD:** `main` @ `b2f7e2d` (PR #9 merged)  
-> **Status:** Plans 1–4 (productization core) + Plan 5 (integration harness/CI) are on `main`  
-> **Next session:** Start productization sequencing **step 10** (network score computation), unless the user picks a different track
+> **Updated:** 2026-07-29  
+> **Repo HEAD:** `main` @ `2f7ed92` (PR #10 merged)  
+> **Status:** Plans 1–5 on `main`. Plan 6 (network score computation) is drafted — execute next  
+> **Next session:** Implement Plan 6 — `docs/superpowers/plans/2026-07-28-network-score-computation.md` (prefer PR A then PR B split)
 
 ---
 
@@ -24,7 +24,7 @@ VeriLink is past the “toolkit only” MVP. The monorepo now has:
 
 ---
 
-## Plan Coverage Audit (2026-07-28)
+## Plan Coverage Audit (2026-07-29)
 
 ### Plan 1 — Engine + trust-engine gRPC — DONE
 - PRs: #1, folded into #4  
@@ -58,18 +58,21 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## What’s Next (productization §13)
+## Plan 6 — Network score computation — READY TO EXECUTE
 
-Highest-value next implementation tracks (not yet done):
+- Plan doc: `docs/superpowers/plans/2026-07-28-network-score-computation.md`
+- Design: §4.5 + §13 step 10
+- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns + API `[0,1]`; `entity_kind` on history + change detection (`score`/`blacklisted`/`score_reason`/`entity_kind`); PR B mandatory live-engine CI
+- Review closure matrix lives in the Plan 6 doc (human + CodeRabbit + Qodo)
+- Suggested split: **PR A** migrations/loader/writer/gRPC client + units; **PR B** scheduler + ingest hook + mandatory CI trust-engine integration
 
-1. **Network score computation** (step 10) — global VeriRank → `network_scores` / history + `sync_events`  
-2. **Sync event log + edge sync** (step 11) — snapshot + SSE, edge cache refresh  
-3. **Go edge hardening** (step 12) — versioned sync client, WAL/snapshots, drop counters  
-4. **Dashboard** (step 13) — provider / agent-builder / admin  
-5. **Bootstrap registry + seed** (step 14)  
-6. **Deploy artifacts** (step 15) — Docker/Helm/releases  
-7. **Client publish** (step 16) — npm `@verilink/node`  
-8. **Whimsy + Codero reference integrations** (steps 17–18) — privacy counsel gates apply
+### What’s after Plan 6 (§13)
+
+1. **Sync event log + edge sync** (step 11)  
+2. **Go edge hardening** (step 12)  
+3. **Dashboard** (step 13)  
+4. **Bootstrap registry + seed** (step 14)  
+5. **Deploy / clients / reference integrations** (steps 15–18)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
@@ -84,6 +87,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-2-control-plane-foundation.md` | Plan 2 (detailed) |
 | `docs/superpowers/plans/2026-07-27-verilink-3-request-auth-protocol.md` | Plan 3 |
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
+| `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 (next) |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
