@@ -6,7 +6,27 @@
 
 **Maps to:** productization design §4.5 “Score computation” + §13 step 10.
 
-**Review revisions (2026-07-29):** expiry filter mandatory; deactivated principals excluded; `pg_advisory_xact_lock` held through commit; single-flight scheduler with dirty latch; `entity_kind` in change detection + history column; PR B makes live RunVeriRank integration mandatory in CI; empty-roots clears existing scores; weight columns constrained to `[0,1]`; deterministic shutdown drain rule.
+**Review revisions (2026-07-29):** expiry filter mandatory; deactivated principals excluded; `pg_advisory_xact_lock` held through commit; single-flight scheduler with dirty latch; `entity_kind` in change detection + history column; PR B makes live RunVeriRank integration mandatory in CI; empty-roots clears existing scores; weight columns constrained to `[0,1]` (DB + API); deterministic shutdown drain rule.
+
+---
+
+## Review findings closure
+
+All actionable comments from human review, CodeRabbit, and Qodo on PR #11 are locked below. Implementation must satisfy every row.
+
+| Source | Finding | Locked where |
+|--------|---------|--------------|
+| Human / Qodo / CR | Expired attestations must be excluded (engine ignores `expires_at`) | Decision 5–6; Task 2 |
+| Human | Deactivated principals/edges excluded (`status = 'active'`) | Decision 7; Task 2 |
+| Human / Qodo / CR | Sync allocator uses `pg_advisory_xact_lock` through commit | Decision 13; Task 3 |
+| Human / Qodo | Single-flight recompute + dirty latch (no concurrent `recomputeNow`) | Decision 2; Task 5 |
+| Human / CR | Shutdown: finish active + drain ≤1 dirty, then exit | Decision 2; Task 5 |
+| Human / Qodo / CR | Empty roots: cold-start no-op vs clear existing scores + `score.delete` | Decision 10; Task 4 |
+| Human / Qodo | Weight columns + writers enforce inclusive `[0,1]` (match gRPC) | Decision 11; Task 3 |
+| Human / Qodo / CR | `entity_kind` in change detection; history column via migration `011` | Decision 12; Task 3 |
+| Human / CR | MD022 blank lines after headings | This document |
+| Human | HANDOVER **Updated** date `2026-07-29` | `HANDOVER.md` |
+| Human | Live RunVeriRank integration mandatory in CI for PR B | Decision 16; Task 6 |
 
 ---
 
@@ -56,16 +76,17 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
 9. **Roots:** from `bootstrap_issuers` joined to active issuers/principals; `Root.weight = current_weight`; principals must include those roots with `is_bootstrap=true`, `trust_weight=1.0`.
 10. **No eligible bootstrap roots (two cases):**
     - **Cold start** (`network_scores` empty): warn and return success — no writer TX. Cold-start seed is step 14.
-    - **Stale graph** (`network_scores` non-empty): open the normal writer TX (with `pg_advisory_xact_lock`), **delete all existing scores**, emit `score.delete` for each, write history as appropriate for deletes, commit. Do **not** leave last-good scores when roots are gone.
+    - **Stale graph** (`network_scores` non-empty): open the normal writer TX (with `pg_advisory_xact_lock`), **delete all existing scores**, emit one `score.delete` per deleted principal, commit. Do **not** insert `network_score_history` on delete (history is change-of-score only). Do **not** leave last-good scores when roots are gone.
 11. **Weight bounds must match gRPC:**
     - Migration (e.g. `010_weight_bounds`) enforces inclusive **`CHECK (col >= 0 AND col <= 1)`** on `issuers.trust_weight` and `bootstrap_issuers.current_weight` (replace `>= 0`-only checks)
-    - Before adding constraints: validate/fix any existing out-of-range rows (fail migration loudly if any remain, or clamp only if an explicit one-time data fix is documented in the migration)
-    - Boundary unit/integration tests: `0.0` and `1.0` accepted; `1.01` / negative rejected at DB and never streamed
+    - Before adding constraints: validate existing rows; **fail the migration** with a clear diagnostic if any row is outside `[0,1]` (no silent clamp unless a separate, documented one-time data-fix migration is approved first)
+    - **API/service validation:** `createIssuer` / any bootstrap weight writer must reject values outside `[0,1]` before insert (DB CHECK is the backstop; do not rely on it alone for UX)
+    - Boundary unit/integration tests: `0.0` and `1.0` accepted; `1.01` / negative rejected at API and DB and never streamed to gRPC
 12. **Diff apply / change predicate:**
-    - Engine row present → upsert `network_scores`; treat as changed if any of **`score`, `blacklist`, `reason`, `entity_kind`** differ vs previous → insert `network_score_history` + `score.upsert` event
+    - Engine row present → upsert `network_scores`; treat as changed if any of **`score`, `blacklisted`, `score_reason`, `entity_kind`** differ vs previous → insert `network_score_history` (including `entity_kind`) + `score.upsert` event
     - Do **not** assume `entity_kind` is immutable
-    - **History schema:** migration adds `entity_kind TEXT NOT NULL` to `network_score_history` (same allowed values as `network_scores` / principals); populate on **every** history insert
-    - Previous score, absent from engine result → delete `network_scores` + `score.delete` event (control plane owns “expired/gone/deactivated/no-roots”, not engine `score_reason`)
+    - **History schema:** migration adds `entity_kind TEXT NOT NULL` to `network_score_history` (same allowed values as `network_scores` / principals); populate on **every history insert** (upsert-change path only)
+    - Previous score, absent from engine result (or empty-roots stale clear) → delete `network_scores` + `score.delete` event; **no** history row on delete (control plane owns “expired/gone/deactivated/no-roots”, not engine `score_reason`)
 13. **Sync-version allocator (correctness):**
     - Score writer opens one DB transaction and immediately runs `SELECT pg_advisory_xact_lock(8392018)` (transaction-scoped; **no** manual unlock)
     - Every `sync_version` allocation for that recompute (`MAX(sync_version)+1` inserts into `sync_events`, and the versions stamped on `network_scores` / history) happens **while that lock is held**, i.e. until the transaction commits or rolls back
@@ -131,11 +152,12 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
 
 ### Task 3: Migrations + score writer (single transaction)
 
-- Ship `009` (deferrable FK), `010` (weight `[0,1]` + validate existing rows), `011` (`network_score_history.entity_kind`)
+- Ship `009` (deferrable FK), `010` (weight `[0,1]` + fail on out-of-range existing rows), `011` (`network_score_history.entity_kind`)
+- Enforce `[0,1]` in `createIssuer` / bootstrap weight writers (API) in the same PR as migration `010`
 - `BEGIN` → `SELECT pg_advisory_xact_lock(8392018)` → allocate versions / write scores / history / events → `COMMIT` (lock released only by commit/rollback)
 - `appendEventWithClient` must **not** take or release any advisory lock
-- Change detection includes **`entity_kind`**; every history insert populates `entity_kind`
-- Integration/unit: concurrent writers cannot allocate duplicate `sync_version`; stale session-lock pattern is gone from `appendEvent`; weight bounds reject `1.01`
+- Change detection compares **`score`, `blacklisted`, `score_reason`, `entity_kind`**; every history insert populates `entity_kind`; deletes emit `score.delete` only
+- Integration/unit: concurrent writers cannot allocate duplicate `sync_version`; stale session-lock pattern is gone from `appendEvent`; weight bounds reject `1.01` at API and DB
 
 ### Task 4: `scoreComputationService.recomputeNow(evaluationTime?)`
 

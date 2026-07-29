@@ -24,7 +24,7 @@ VeriLink is past the “toolkit only” MVP. The monorepo now has:
 
 ---
 
-## Plan Coverage Audit (2026-07-28)
+## Plan Coverage Audit (2026-07-29)
 
 ### Plan 1 — Engine + trust-engine gRPC — DONE
 - PRs: #1, folded into #4  
@@ -62,7 +62,8 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 - Plan doc: `docs/superpowers/plans/2026-07-28-network-score-computation.md`
 - Design: §4.5 + §13 step 10
-- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns `[0,1]`; `entity_kind` on history + change detection; PR B mandatory live-engine CI
+- Locked: single-flight debounce (60s) + hourly + dirty latch; deterministic shutdown (finish active + drain ≤1 dirty); live gRPC `RunVeriRank`; Verify stays in-process Node; scores + `sync_events` in one TX with `pg_advisory_xact_lock`; mandatory expiry + active-principal filters; shared `evaluationTime`; empty-roots clears existing scores (cold-start no-op only); weight columns + API `[0,1]`; `entity_kind` on history + change detection (`score`/`blacklisted`/`score_reason`/`entity_kind`); PR B mandatory live-engine CI
+- Review closure matrix lives in the Plan 6 doc (human + CodeRabbit + Qodo)
 - Suggested split: **PR A** migrations/loader/writer/gRPC client + units; **PR B** scheduler + ingest hook + mandatory CI trust-engine integration
 
 ### What’s after Plan 6 (§13)
