@@ -27,6 +27,10 @@ All actionable comments from human review, CodeRabbit, and Qodo on PR #14 are lo
 | CodeRabbit | `sync_cursors` updates must be monotonic | Decision 11; Task 6 |
 | CodeRabbit | Per-connection `res.write()` backpressure | Decision 12; Task 1; Task 7 |
 | CodeRabbit | HANDOVER Plan 6 still IN PROGRESS | `HANDOVER.md` (this PR) |
+| CodeRabbit | Bounded initial-batch probe before materializing events | Decision 12; Task 1 |
+| CodeRabbit | Shutdown frame must not be dropped when queue full | Decision 12; Task 7 |
+| CodeRabbit | Strict `Last-Event-ID` integer parsing | Decision 15; Task 1 |
+| CodeRabbit | Empty `sync_events` → high-water `0` | Decision 14; Task 1 |
 
 ---
 
@@ -54,7 +58,7 @@ What's missing:
 3. **`410 Gone` — three distinct cases (do not conflate):**
    - **Bootstrap (never 410):** missing `Last-Event-ID`, `?last_event_id=0`, or header `Last-Event-ID: 0` means “start from the beginning.” Stream tenant-filtered events with `sync_version > 0`. A non-empty `sync_events` table with cursor `0` is valid and must **not** return 410.
    - **Retention / pruned cursor (deferred in Plan 7):** when event pruning ships, return 410 only if `last_event_id > 0` **and** `last_event_id < retention_floor_version` (oldest retained `sync_version`). **Do not** use `last_event_id < MIN(sync_version)` while pruning is disabled — that breaks bootstrap semantics.
-   - **Backlog cap (Plan 7):** if `last_event_id > 0` and the tenant-filtered backlog exceeds `SYNC_SSE_MAX_INITIAL_BATCH`, return 410 and force a full snapshot refresh.
+   - **Backlog cap (Plan 7):** if `last_event_id > 0` and the tenant-filtered backlog **count** exceeds `SYNC_SSE_MAX_INITIAL_BATCH`, return `410 Gone` and force a full snapshot refresh. **Detection must use a bounded probe** (`LIMIT SYNC_SSE_MAX_INITIAL_BATCH + 1` with tenant predicate) — never load an unbounded backlog into memory (bootstrap `0` on a large table is especially dangerous).
 4. **Non-durable cursor events (revised):** to advance `Last-Event-ID` across tenant-filtered gaps, the stream sends `event: cursor\nid: <high_water_version>\ndata: {}\n\n`. This is SSE-only — no row in `sync_events`. **Frequency: on every poll cycle where high-water has advanced since last emitted cursor** (not just during heartbeats). This keeps `Last-Event-ID` within one poll interval of the true high-water, regardless of whether durable events were tenant-visible.
 5. **Per-tenant filtering:** `score.upsert`, `score.delete`, `key.upsert`, `key.revoke` → all tenants. `policy.replace` → only the owning tenant. This is the existing repository filter.
 6. **Event pruning:** not in scope for Plan 7. Events accumulate. Pruning (+ `410 Gone` enforcement) can be added in a follow-up once retention policy is set.
@@ -65,13 +69,14 @@ What's missing:
 11. **`sync_cursors` persistence:** the control-plane writes `last_cursor` per edge_node on connect, periodically (every 60s or 100 events), and on disconnect (best-effort). **All upserts must be monotonic:** `last_cursor = GREATEST(sync_cursors.last_cursor, EXCLUDED.last_cursor)` so overlapping reconnects or out-of-order periodic/disconnect writes cannot regress lag metrics. Failures are logged as warnings, not thrown. Informational for Plan 7 (monitor lag); stream resume uses edge `Last-Event-ID`, not this table.
 12. **Connection limits and backpressure:**
     - Configurable max concurrent SSE connections per control-plane instance: `SYNC_SSE_MAX_CONNECTIONS` (default 100). New connections beyond this limit receive `503 Service Unavailable`.
-    - Initial batch cap: if the backlog since `Last-Event-ID` exceeds `SYNC_SSE_MAX_INITIAL_BATCH` events (default 10000), respond `410 Gone` (backlog case — Decision 3).
-    - **Per-connection write backpressure:** admission caps are not enough. Each SSE connection maintains a **bounded outbound queue** (default max 256 pending frames). Enqueue event data, cursor events, heartbeats (`: ping`), and shutdown (`: shutdown`) through the same queue. If `res.write()` returns false, pause dequeuing until `drain`. If the queue stays full longer than `SYNC_SSE_SLOW_CLIENT_MS` (default 60000), close the connection. Prevents slow clients from growing unbounded `res.write()` buffers.
-    - Graceful shutdown: on SIGTERM/SIGINT, stop accepting new SSE connections, enqueue `: shutdown\n\n` on each connection’s queue, flush with drain timeout (default 5 seconds), then close. SSE cleanup **before** `server.close()` and `pool.end()`.
+    - Initial batch cap: bounded probe as in Decision 3; 410 when count > `SYNC_SSE_MAX_INITIAL_BATCH`.
+    - **Per-connection write backpressure:** admission caps are not enough. Each SSE connection maintains a **bounded outbound queue** for data frames (default max `SYNC_SSE_WRITE_QUEUE_MAX` = 256). **Reserve one slot (or a dedicated control lane) for shutdown** so `: shutdown\n\n` is always accepted even when the data queue is full — never drop or reject shutdown. Heartbeats and cursor events use the data queue; on overflow, apply slow-client policy (`drain` wait, then close after `SYNC_SSE_SLOW_CLIENT_MS`). If `res.write()` returns false, pause dequeuing until `drain`.
+    - Graceful shutdown: on SIGTERM/SIGINT, stop accepting new SSE connections; **prepend or priority-enqueue** `: shutdown\n\n` on each connection (guaranteed delivery per reserved slot); flush with drain timeout (default 5 seconds); then close. SSE cleanup **before** `server.close()` and `pool.end()`.
     - Reconnection storm mitigation: `retry: <SYNC_SSE_POLL_INTERVAL_MS>\n` in the SSE preamble; edges use exponential backoff client-side.
     - v1 safety rails; Redis pub/sub (post-v1) changes scaling profile.
 13. **CI trust-engine requirement (new):** Plan 7 integration tests seed scores via `recomputeNow`, which requires a live trust-engine. CI already starts trust-engine as a sidecar (Plan 6 PR B). Plan 7 integration tests reuse this CI setup — no mocking. The `TRUST_ENGINE_ADDR` env var is mandatory in CI for these tests.
-14. **Snapshot-consistent high-water for cursor events (new):** each poll cycle must read both tenant-filtered events **and** high-water version from the **same query or snapshot**. Implementation: the poll query returns events; the high-water is `MAX(sync_version)` from the unfiltered `sync_events` table in the same `SELECT` (or a CTE). This prevents the race where a tenant-visible event commits between the event read and the high-water read and is skipped forever.
+14. **Snapshot-consistent high-water for cursor events:** each poll cycle must read tenant-filtered events **and** global high-water from the **same query or snapshot** (CTE or single statement). High-water is **`COALESCE(MAX(sync_version), 0)`** over `sync_events` (empty table → `0`, not SQL `NULL`). Use that value for cursor event `id`, comparisons, and serialization. This prevents skipped events and defines empty-table bootstrap behavior.
+15. **`Last-Event-ID` parsing:** parse header or `?last_event_id=` as a **non-negative integer** (`sync_version`). Missing → `0` (bootstrap). Reject with **400 Bad Request**: negative values, non-numeric strings, decimals, empty after trim, or values outside safe integer range (use `BigInt` or decimal string compare for IDs > `Number.MAX_SAFE_INTEGER` — do not use `parseFloat`). Apply validation **before** backlog probe, 410 logic, or DB queries.
 
 ---
 
@@ -81,16 +86,16 @@ What's missing:
 
 Rewrite `GET /v1/sync/events`:
 - Check active SSE connection count; if >= `SYNC_SSE_MAX_CONNECTIONS`, respond `503`.
-- Read `Last-Event-ID` from header (per SSE spec) or `?last_event_id` query param (backwards compat); header wins. Normalize missing → `0` for bootstrap.
+- Read `Last-Event-ID` from header (per SSE spec) or `?last_event_id` query param (backwards compat); header wins. **Parse per Decision 15** (400 on invalid).
 - **Never 410 for bootstrap cursor `0`** (Decision 3).
 - If `last_event_id > 0` and pruning enabled and `last_event_id < retention_floor_version`: respond `410 Gone` (**Plan 7:** pruning disabled — skip this branch in implementation and tests).
-- If `last_event_id > 0` and backlog > `SYNC_SSE_MAX_INITIAL_BATCH`: respond `410 Gone`.
+- If `last_event_id > 0`: run **bounded backlog probe** — tenant-filtered `sync_version > last_event_id` with `ORDER BY sync_version ASC LIMIT SYNC_SSE_MAX_INITIAL_BATCH + 1`. If more than `SYNC_SSE_MAX_INITIAL_BATCH` rows would match, respond `410 Gone` without loading the full backlog.
 - Set `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
-- Attach per-connection **bounded write queue** (Decision 12); all SSE output goes through it.
+- Attach per-connection **bounded write queue** (Decision 12) with **shutdown slot reserved**; data frames, heartbeats, and cursor events use the data queue.
 - Write SSE preamble: `retry: <SYNC_SSE_POLL_INTERVAL_MS>\n\n`.
-- Flush initial batch of events since cursor (tenant-filtered, `sync_version > last_event_id` except bootstrap `0` streams from start).
-- After each batch: if high-water advanced, send non-durable cursor event. **High-water must come from the same query/snapshot as the event read (Decision 14).**
-- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + high-water atomically, enqueue flushed events, send cursor event if high-water advanced. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
+- Flush initial batch from the bounded probe result (at most `SYNC_SSE_MAX_INITIAL_BATCH` rows). Poll query returns events plus `hw = COALESCE(MAX(sync_version), 0)` in the same CTE/statement (Decision 14).
+- After each batch: if `hw` advanced, send non-durable cursor event with `id: <hw>`.
+- Enter poll loop: sleep `SYNC_SSE_POLL_INTERVAL_MS` (default 5000), query new events + `COALESCE(MAX(sync_version),0)` atomically, enqueue data frames, send cursor when `hw` advanced. Enqueue `: ping\n\n` every `SYNC_SSE_HEARTBEAT_INTERVAL_MS` (default 30000).
 - On client disconnect (`req.on('close')`): best-effort monotonic `sync_cursors` update, drain/close queue, clean up timers.
 - **req.socket.setNoDelay(true)** for minimal latency.
 
@@ -125,7 +130,9 @@ Rewrite `GET /v1/sync/events`:
 - Assert `: ping` heartbeat within interval.
 - Assert non-durable cursor event after batch, with `id` matching high-water.
 - Assert bootstrap: no `Last-Event-ID` (or `0`) on non-empty `sync_events` returns **200** stream, not 410.
-- Assert `410 Gone` when backlog > max initial batch (seed or lower config).
+- Assert empty `sync_events`: stream starts, cursor events use `id: 0` (COALESCE high-water).
+- Assert `400` for malformed `Last-Event-ID` (negative, non-numeric, fractional); oversized ID handled without precision loss.
+- Assert `410 Gone` when backlog > max initial batch (seed or lower config; probe uses LIMIT+1).
 - **Deferred:** retention/pruned-cursor 410 tests until pruning ships (Decision 6).
 - Assert `503` when max connections exceeded.
 - Assert tenant filtering: tenant B does not receive tenant A `policy.replace`.
@@ -142,9 +149,9 @@ Rewrite `GET /v1/sync/events`:
 ### Task 7: SSE connection lifecycle + graceful shutdown
 
 - Track active SSE connections in a `Set` (or similar) on the server.
-- On SIGTERM/SIGINT (`index.ts`): stop accepting new SSE; enqueue shutdown frame per connection; wait for queue drain / timeout; **before** `server.close()` and `pool.end()`.
+- On SIGTERM/SIGINT (`index.ts`): stop accepting new SSE; **priority-enqueue shutdown** on each connection (reserved slot — never dropped when data queue full); wait for queue drain / timeout; **before** `server.close()` and `pool.end()`.
 - Expose active connection count for the 503 gate and monitoring.
-- Unit test: slow client that never reads is disconnected after `SYNC_SSE_SLOW_CLIENT_MS` with bounded queue.
+- Unit tests: slow client disconnected after `SYNC_SSE_SLOW_CLIENT_MS`; **shutdown delivered when data queue is full**.
 
 ### Task 8: Docs
 
