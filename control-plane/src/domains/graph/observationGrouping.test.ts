@@ -77,4 +77,13 @@ describe('groupAttestationsForScoring', () => {
     ];
     assert.equal(groupAttestationsForScoring(rows).length, 2);
   });
+
+  it('does not merge same observation_id across different issuer/subject', () => {
+    const rows = [
+      att({ id: 'a', observation_id: 'obs-1', issuer_id: 'iss-1', subject_id: 'sub-1' }),
+      att({ id: 'b', observation_id: 'obs-1', issuer_id: 'iss-2', subject_id: 'sub-1' }),
+      att({ id: 'c', observation_id: 'obs-1', issuer_id: 'iss-1', subject_id: 'sub-2' }),
+    ];
+    assert.equal(groupAttestationsForScoring(rows).length, 3);
+  });
 });

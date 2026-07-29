@@ -1,5 +1,6 @@
 // control-plane/src/domains/graph/attestationGraphLoader.ts
-import { pool } from '../../db/transaction.js';
+import type pg from 'pg';
+import { withTransaction } from '../../db/transaction.js';
 import { groupAttestationsForScoring } from './observationGrouping.js';
 
 const HALF_LIVES_MS = 1800 * 24 * 60 * 60 * 1000;
@@ -32,6 +33,8 @@ export interface AttestationGraph {
   principals: GraphPrincipal[];
   roots: GraphRoot[];
   attestations: GraphAttestation[];
+  /** Count of network_scores rows from the same snapshot as the graph. */
+  networkScoreCount: number;
 }
 
 interface AttestationRow {
@@ -62,12 +65,24 @@ interface IssuerMetaRow {
 
 /**
  * Load the active scoring graph for a single captured evaluationTime.
+ * All reads share one REPEATABLE READ transaction so roots/attestations/
+ * principals/score-count cannot tear across pool connections.
  * Never uses SQL now() for expiry / half-life predicates.
  */
 export async function loadAttestationGraph(evaluationTime: Date): Promise<AttestationGraph> {
+  return withTransaction(async (client) => {
+    await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    return loadAttestationGraphWithClient(client, evaluationTime);
+  });
+}
+
+export async function loadAttestationGraphWithClient(
+  client: pg.PoolClient,
+  evaluationTime: Date
+): Promise<AttestationGraph> {
   const halfLifeCutoff = new Date(evaluationTime.getTime() - HALF_LIVES_MS);
 
-  const { rows: rootRows } = await pool.query<RootRow>(
+  const { rows: rootRows } = await client.query<RootRow>(
     `SELECT b.principal_id, b.current_weight, p.entity_kind
      FROM bootstrap_issuers b
      JOIN issuers i ON i.principal_id = b.principal_id
@@ -80,7 +95,7 @@ export async function loadAttestationGraph(evaluationTime: Date): Promise<Attest
     weight: parseFloat(r.current_weight),
   }));
 
-  const { rows: attRows } = await pool.query<AttestationRow>(
+  const { rows: attRows } = await client.query<AttestationRow>(
     `SELECT a.id, a.issuer_id, a.subject_id, a.trust_delta, a.issued_at, a.expires_at,
             a.attestation_type, a.observation_id, a.visibility
      FROM attestations a
@@ -101,12 +116,17 @@ export async function loadAttestationGraph(evaluationTime: Date): Promise<Attest
     neededIds.add(a.subject_id);
   }
 
+  const { rows: countRows } = await client.query<{ n: string }>(
+    'SELECT COUNT(*)::text AS n FROM network_scores'
+  );
+  const networkScoreCount = parseInt(countRows[0].n, 10);
+
   if (neededIds.size === 0) {
-    return { principals: [], roots: [], attestations: [] };
+    return { principals: [], roots: [], attestations: [], networkScoreCount };
   }
 
   const ids = [...neededIds];
-  const { rows: principalRows } = await pool.query<IssuerMetaRow>(
+  const { rows: principalRows } = await client.query<IssuerMetaRow>(
     `SELECT p.id AS principal_id, p.entity_kind, p.status,
             COALESCE(i.trust_weight, 1.0) AS trust_weight,
             COALESCE(i.is_bootstrap, false) AS is_bootstrap
@@ -119,17 +139,16 @@ export async function loadAttestationGraph(evaluationTime: Date): Promise<Attest
 
   const rootSet = new Set(roots.map((r) => r.id));
   const principals: GraphPrincipal[] = principalRows.map((r) => {
-    const isBootstrap = rootSet.has(r.principal_id) || r.is_bootstrap;
+    const isRoot = rootSet.has(r.principal_id);
     return {
       id: r.principal_id,
       entity_kind: r.entity_kind,
       // Bootstrap principals streamed as roots must have trust_weight=1.0 (gRPC contract).
-      trust_weight: isBootstrap && rootSet.has(r.principal_id) ? 1.0 : parseFloat(r.trust_weight),
-      is_bootstrap: isBootstrap && rootSet.has(r.principal_id),
+      trust_weight: isRoot ? 1.0 : parseFloat(r.trust_weight),
+      is_bootstrap: isRoot,
     };
   });
 
-  // Drop attestations whose principals vanished (defensive; query already filters active).
   const activeIds = new Set(principals.map((p) => p.id));
   const filteredAttestations = attestations.filter(
     (a) => activeIds.has(a.issuer_id) && activeIds.has(a.subject_id)
@@ -140,10 +159,6 @@ export async function loadAttestationGraph(evaluationTime: Date): Promise<Attest
     principals,
     roots: filteredRoots,
     attestations: filteredAttestations,
+    networkScoreCount,
   };
-}
-
-export async function countNetworkScores(): Promise<number> {
-  const { rows } = await pool.query<{ n: string }>('SELECT COUNT(*)::text AS n FROM network_scores');
-  return parseInt(rows[0].n, 10);
 }

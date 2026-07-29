@@ -7,4 +7,8 @@ ALTER TABLE network_scores
 ALTER TABLE network_scores
   ADD CONSTRAINT network_scores_principal_id_fkey
   FOREIGN KEY (principal_id) REFERENCES principals(id) ON DELETE CASCADE
-  DEFERRABLE INITIALLY DEFERRED;
+  DEFERRABLE INITIALLY DEFERRED
+  NOT VALID;
+
+ALTER TABLE network_scores
+  VALIDATE CONSTRAINT network_scores_principal_id_fkey;

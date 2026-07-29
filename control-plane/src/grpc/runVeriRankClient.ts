@@ -1,6 +1,7 @@
 // control-plane/src/grpc/runVeriRankClient.ts
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { once } from 'node:events';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { config } from '../config.js';
@@ -25,6 +26,7 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
   oneofs: true,
 });
 
+// Dynamic proto stubs — shape varies with proto-loader; keep local any.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 const TrustEngine = proto.verilink.trust.v1.TrustEngine as grpc.ServiceClientConstructor;
@@ -66,52 +68,115 @@ function mapRoot(r: GraphRoot) {
   };
 }
 
+async function writeChunk(
+  call: grpc.ClientWritableStream<unknown>,
+  chunk: unknown
+): Promise<void> {
+  if (call.write(chunk)) return;
+  await once(call, 'drain');
+}
+
+function isRetryableGrpcError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return true;
+  const code = (err as { code?: number }).code;
+  if (typeof code !== 'number') return true;
+  switch (code) {
+    case grpc.status.INVALID_ARGUMENT:
+    case grpc.status.NOT_FOUND:
+    case grpc.status.ALREADY_EXISTS:
+    case grpc.status.PERMISSION_DENIED:
+    case grpc.status.UNAUTHENTICATED:
+    case grpc.status.FAILED_PRECONDITION:
+    case grpc.status.OUT_OF_RANGE:
+    case grpc.status.UNIMPLEMENTED:
+      return false;
+    default:
+      return true;
+  }
+}
+
+function grpcCredentialsFor(addr: string): grpc.ChannelCredentials {
+  // TLS for non-local trust-engine addresses; insecure only for loopback MVP.
+  const host = addr.split(':')[0]?.toLowerCase() ?? '';
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return grpc.credentials.createInsecure();
+  }
+  return grpc.credentials.createSsl();
+}
+
 export function runVeriRank(
   graph: AttestationGraph,
   evaluationTime: Date,
   addr: string = config.trustEngine.addr
 ): Promise<RunVeriRankResult> {
-  const client = new TrustEngine(addr, grpc.credentials.createInsecure(), {
+  const client = new TrustEngine(addr, grpcCredentialsFor(addr), {
     'grpc.max_receive_message_length': 64 * 1024 * 1024,
   });
 
   return new Promise((resolve, reject) => {
-    const deadline = new Date(Date.now() + 60_000);
-    const call = client.RunVeriRank({}, { deadline }, (err: Error | null, res: any) => {
-      client.close();
-      if (err) {
-        reject(err);
-        return;
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      try {
+        client.close();
+      } catch {
+        // ignore close errors after stream failure
       }
-      const rows: EngineScore[] = (res?.rows || []).map((r: any) => ({
-        principal_id: String(r.principalId ?? r.principal_id),
-        entity_kind: String(r.entityKind ?? r.entity_kind),
-        score: Number(r.score),
-        blacklisted: Boolean(r.blacklisted),
-        score_reason: String(r.scoreReason ?? r.score_reason),
-      }));
-      resolve({
-        rows,
-        computedAtUnix: Number(res?.computedAtUnix ?? res?.computed_at_unix ?? toUnix(evaluationTime)),
-      });
-    });
+      fn();
+    };
+
+    const deadline = new Date(Date.now() + 60_000);
+    // First argument must be Metadata (not a plain {}), or grpc-js rejects the call.
+    const metadata = new grpc.Metadata();
+    const call = client.RunVeriRank(
+      metadata,
+      { deadline },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (err: Error | null, res: any) => {
+        settle(() => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          const rows: EngineScore[] = (res?.rows || []).map((r: any) => ({
+            principal_id: String(r.principalId ?? r.principal_id),
+            entity_kind: String(r.entityKind ?? r.entity_kind),
+            score: Number(r.score),
+            blacklisted: Boolean(r.blacklisted),
+            score_reason: String(r.scoreReason ?? r.score_reason),
+          }));
+          resolve({
+            rows,
+            computedAtUnix: Number(
+              res?.computedAtUnix ?? res?.computed_at_unix ?? toUnix(evaluationTime)
+            ),
+          });
+        });
+      }
+    );
 
     call.on('error', (err: Error) => {
-      client.close();
-      reject(err);
+      settle(() => reject(err));
     });
 
-    call.write({ header: { evaluationTimeUnix: toUnix(evaluationTime) } });
-    for (const p of graph.principals) {
-      call.write({ principal: mapPrincipal(p) });
-    }
-    for (const r of graph.roots) {
-      call.write({ root: mapRoot(r) });
-    }
-    for (const a of graph.attestations) {
-      call.write({ attestation: mapAttestation(a) });
-    }
-    call.end();
+    void (async () => {
+      try {
+        await writeChunk(call, { header: { evaluationTimeUnix: toUnix(evaluationTime) } });
+        for (const p of graph.principals) {
+          await writeChunk(call, { principal: mapPrincipal(p) });
+        }
+        for (const r of graph.roots) {
+          await writeChunk(call, { root: mapRoot(r) });
+        }
+        for (const a of graph.attestations) {
+          await writeChunk(call, { attestation: mapAttestation(a) });
+        }
+        call.end();
+      } catch (err) {
+        settle(() => reject(err));
+      }
+    })();
   });
 }
 
@@ -127,9 +192,10 @@ export async function runVeriRankWithRetry(
       return await runVeriRank(graph, evaluationTime, opts.addr);
     } catch (err) {
       lastErr = err;
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 100 * attempt));
+      if (attempt >= retries || !isRetryableGrpcError(err)) {
+        break;
       }
+      await new Promise((r) => setTimeout(r, 100 * attempt));
     }
   }
   throw lastErr;

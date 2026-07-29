@@ -1,10 +1,7 @@
 // control-plane/src/domains/graph/scoreComputationService.ts
 import { logger } from '../../shared/logger.js';
 import { runVeriRankWithRetry } from '../../grpc/runVeriRankClient.js';
-import {
-  countNetworkScores,
-  loadAttestationGraph,
-} from './attestationGraphLoader.js';
+import { loadAttestationGraph } from './attestationGraphLoader.js';
 import { applyScoreTable, clearAllScores } from './scoreWriter.js';
 
 export interface RecomputeResult {
@@ -17,6 +14,7 @@ export interface RecomputeResult {
 /**
  * Capture one evaluationTime and run loader → RunVeriRank → writer.
  * Empty eligible roots: cold-start no-op vs clear existing scores.
+ * Graph load uses one REPEATABLE READ snapshot (including score count).
  */
 export async function recomputeNow(
   evaluationTime: Date = new Date(),
@@ -25,13 +23,12 @@ export async function recomputeNow(
   const graph = await loadAttestationGraph(evaluationTime);
 
   if (graph.roots.length === 0) {
-    const existing = await countNetworkScores();
-    if (existing === 0) {
+    if (graph.networkScoreCount === 0) {
       logger.warn({ evaluationTime }, 'score recompute: no eligible bootstrap roots (cold start)');
       return { status: 'cold_start', upserts: 0, deletes: 0, evaluationTime };
     }
     logger.warn(
-      { evaluationTime, existing },
+      { evaluationTime, existing: graph.networkScoreCount },
       'score recompute: no eligible bootstrap roots — clearing stale scores'
     );
     const deletes = await clearAllScores();

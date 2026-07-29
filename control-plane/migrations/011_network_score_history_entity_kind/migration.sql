@@ -28,4 +28,7 @@ ALTER TABLE network_score_history
 
 ALTER TABLE network_score_history
   ADD CONSTRAINT network_score_history_entity_kind_check
-  CHECK (entity_kind IN ('agent', 'issuer', 'both'));
+  CHECK (entity_kind IN ('agent', 'issuer', 'both')) NOT VALID;
+
+ALTER TABLE network_score_history
+  VALIDATE CONSTRAINT network_score_history_entity_kind_check;

@@ -20,4 +20,13 @@ describe('assertTrustWeightInRange', () => {
       (e: unknown) => e instanceof AppError && e.code === CODES.BAD_REQUEST
     );
   });
+
+  it('rejects non-finite values', () => {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      assert.throws(
+        () => assertTrustWeightInRange(value),
+        (e: unknown) => e instanceof AppError && e.code === CODES.BAD_REQUEST
+      );
+    }
+  });
 });

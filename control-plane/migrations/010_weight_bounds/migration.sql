@@ -20,9 +20,11 @@ END $$;
 ALTER TABLE issuers DROP CONSTRAINT issuers_trust_weight_check;
 ALTER TABLE issuers
   ADD CONSTRAINT issuers_trust_weight_check
-  CHECK (trust_weight >= 0 AND trust_weight <= 1);
+  CHECK (trust_weight >= 0 AND trust_weight <= 1) NOT VALID;
+ALTER TABLE issuers VALIDATE CONSTRAINT issuers_trust_weight_check;
 
 ALTER TABLE bootstrap_issuers DROP CONSTRAINT bootstrap_issuers_current_weight_check;
 ALTER TABLE bootstrap_issuers
   ADD CONSTRAINT bootstrap_issuers_current_weight_check
-  CHECK (current_weight >= 0 AND current_weight <= 1);
+  CHECK (current_weight >= 0 AND current_weight <= 1) NOT VALID;
+ALTER TABLE bootstrap_issuers VALIDATE CONSTRAINT bootstrap_issuers_current_weight_check;
