@@ -1,5 +1,8 @@
 // control-plane/src/domains/sync/syncRepository.ts
+import type pg from 'pg';
 import { pool, withTransaction } from '../../db/transaction.js';
+
+export const SYNC_VERSION_LOCK_KEY = 8392018;
 
 export interface SyncEvent {
   sync_version: number;
@@ -10,6 +13,23 @@ export interface SyncEvent {
   created_at: Date;
 }
 
+/** Caller must already hold pg_advisory_xact_lock(SYNC_VERSION_LOCK_KEY). */
+export async function appendEventWithClient(
+  client: pg.PoolClient,
+  eventType: string,
+  payload: Record<string, unknown>,
+  opts: { principalId?: string; tenantId?: string } = {}
+): Promise<number> {
+  const { rows } = await client.query(
+    `INSERT INTO sync_events (sync_version, event_type, principal_id, tenant_id, payload)
+     SELECT COALESCE(MAX(sync_version), 0) + 1, $1, $2, $3, $4
+     FROM sync_events
+     RETURNING sync_version`,
+    [eventType, opts.principalId || null, opts.tenantId || null, JSON.stringify(payload)]
+  );
+  return parseInt(rows[0].sync_version, 10);
+}
+
 export async function appendEvent(
   eventType: string,
   payload: Record<string, unknown>,
@@ -17,19 +37,8 @@ export async function appendEvent(
 ): Promise<number> {
   return withTransaction(async (client) => {
     await client.query("SET lock_timeout = '5s'");
-    await client.query('SELECT pg_advisory_lock(8392018)');
-    try {
-      const { rows } = await client.query(
-        `INSERT INTO sync_events (sync_version, event_type, principal_id, tenant_id, payload)
-         SELECT COALESCE(MAX(sync_version), 0) + 1, $1, $2, $3, $4
-         FROM sync_events
-         RETURNING sync_version`,
-        [eventType, opts.principalId || null, opts.tenantId || null, JSON.stringify(payload)]
-      );
-      return rows[0].sync_version;
-    } finally {
-      await client.query('SELECT pg_advisory_unlock(8392018)');
-    }
+    await client.query('SELECT pg_advisory_xact_lock($1)', [SYNC_VERSION_LOCK_KEY]);
+    return appendEventWithClient(client, eventType, payload, opts);
   });
 }
 
@@ -41,11 +50,9 @@ export async function getEventsSince(
   const params: unknown[] = [sinceVersion];
 
   if (tenantId) {
-    // Global events + tenant-specific events
     query += ' AND (tenant_id IS NULL OR tenant_id = $2)';
     params.push(tenantId);
   } else {
-    // Only global events
     query += ' AND tenant_id IS NULL';
   }
 

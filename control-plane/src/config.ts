@@ -39,6 +39,10 @@ export const config = Object.freeze({
   trustEngine: Object.freeze({
     addr: optional('TRUST_ENGINE_ADDR', 'localhost:9091'),
   }),
+  scoreRecompute: Object.freeze({
+    debounceMs: optionalInt('SCORE_RECOMPUTE_DEBOUNCE_MS', 60_000),
+    intervalMs: optionalInt('SCORE_RECOMPUTE_INTERVAL_MS', 3_600_000),
+  }),
   server: Object.freeze({
     port: optionalInt('PORT', 3000),
     nodeEnv: optional('NODE_ENV', 'development'),

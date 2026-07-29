@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import * as principalRepo from './principalRepository.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
+import { assertTrustWeightInRange } from './trustWeight.js';
 
 export async function createPrincipal(opts: {
   entityKind: string;
@@ -53,6 +54,7 @@ export async function listKeys(principalId: string) {
 }
 
 export async function createIssuer(principalId: string, trustWeight?: number) {
+  assertTrustWeightInRange(trustWeight);
   const p = await getPrincipal(principalId);
   if (p.entity_kind === 'agent') {
     await principalRepo.updatePrincipal(principalId, { entity_kind: 'both' });

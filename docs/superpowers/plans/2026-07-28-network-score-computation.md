@@ -93,9 +93,10 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
     - Refactor `appendEvent` to use `pg_advisory_xact_lock` the same way (session lock + unlock-before-commit is a race: two TXs can compute the same `MAX+1`)
 14. **Retry:** RunVeriRank failures → retry up to 3 times with backoff; then log error and keep last-good `network_scores` (design §7.2). Do not apply a partial writer on failed engine calls. (Empty-roots stale clear is **not** an engine failure — it is an intentional delete path.)
 15. **Migrations in this plan:**
-    - `009_network_scores_fk_deferrable` — `DEFERRABLE INITIALLY DEFERRED` on `network_scores.principal_id` FK (design §5)
-    - `010_weight_bounds` — `[0,1]` on `issuers.trust_weight` and `bootstrap_issuers.current_weight`
-    - `011_network_score_history_entity_kind` — add `entity_kind` to `network_score_history` (backfill from current `network_scores` where possible; NOT NULL after backfill)
+    - `009_network_scores_fk_deferrable` — add deferrable FK replacement as `NOT VALID`
+    - `010_weight_bounds` — add `[0,1]` CHECKs as `NOT VALID` (keep live `>=0` until swap)
+    - `011_network_score_history_entity_kind` — add `entity_kind` + `NOT VALID` checks
+    - `012_validate_score_constraints` — **separate transaction**: `VALIDATE`, then drop/rename/`SET NOT NULL` (avoids holding validation locks in the ADD migrations)
 16. **CI:** PR A may skip live-engine tests when `TRUST_ENGINE_ADDR` unset. **PR B must start trust-engine in CI** and make the score-recompute integration test **mandatory** before Plan 6 is marked complete.
 
 ---
@@ -113,6 +114,7 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
 - `control-plane/migrations/009_network_scores_fk_deferrable/migration.sql`
 - `control-plane/migrations/010_weight_bounds/migration.sql`
 - `control-plane/migrations/011_network_score_history_entity_kind/migration.sql`
+- `control-plane/migrations/012_validate_score_constraints/migration.sql`
 - Unit tests: `scoreComputationService.test.ts`, `attestationGraphLoader.test.ts`, `recomputeScheduler.test.ts`, `scoreWriter` lock/version tests
 - Integration: `control-plane/src/__tests__/integration/score-recompute.test.ts`
 
@@ -152,7 +154,7 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
 
 ### Task 3: Migrations + score writer (single transaction)
 
-- Ship `009` (deferrable FK), `010` (weight `[0,1]` + fail on out-of-range existing rows), `011` (`network_score_history.entity_kind`)
+- Ship `009`–`011` (`NOT VALID` adds) + `012` (separate-TX validate/swap), `010` fails loudly on out-of-range existing rows
 - Enforce `[0,1]` in `createIssuer` / bootstrap weight writers (API) in the same PR as migration `010`
 - `BEGIN` → `SELECT pg_advisory_xact_lock(8392018)` → allocate versions / write scores / history / events → `COMMIT` (lock released only by commit/rollback)
 - `appendEventWithClient` must **not** take or release any advisory lock
@@ -239,7 +241,7 @@ cd control-plane && npm run test:integration
 
 ## Suggested PR split
 
-1. **PR A:** migrations (`009`–`011`) + loader (expiry + active principals + shared `evaluationTime`) + writer (`pg_advisory_xact_lock`, history `entity_kind`) + empty-roots cold-start vs clear-stale + gRPC client + unit tests; live-engine integration optional/skippable when unset
+1. **PR A:** migrations (`009`–`012`) + loader (expiry + active principals + shared `evaluationTime`) + writer (`pg_advisory_xact_lock`, history `entity_kind`) + empty-roots cold-start vs clear-stale + gRPC client + unit tests; live-engine integration optional/skippable when unset
 2. **PR B:** single-flight scheduler (deterministic stop) + ingest hook + **mandatory** CI trust-engine + score-recompute integration + docs; Plan 6 complete only when this lands green
 
 Keep each PR reviewable; A can be validated with direct `recomputeNow` in tests.

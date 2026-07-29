@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-29  
-> **Repo HEAD:** `main` @ `2f7ed92` (PR #10 merged)  
-> **Status:** Plans 1–5 on `main`. Plan 6 (network score computation) is drafted — execute next  
-> **Next session:** Implement Plan 6 — `docs/superpowers/plans/2026-07-28-network-score-computation.md` (prefer PR A then PR B split)
+> **Repo HEAD:** `main` @ Plan 6 docs merged (PR #11)  
+> **Status:** Plans 1–5 + Plan 6 plan doc on `main`. Implementing Plan 6 **PR A** (loader/writer/gRPC/migrations)  
+> **Next session:** Finish/land Plan 6 PR A then PR B (scheduler + mandatory CI trust-engine)
 
 ---
 
