@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-29  
-> **Repo HEAD:** `main` @ Plan 6 PR A merged (PR #12)  
-> **Status:** Plan 6 PR A on `main`. Implementing Plan 6 **PR B** (scheduler + ingest hook + mandatory CI trust-engine)  
-> **Next session:** Land Plan 6 PR B → Plan 6 complete → Plan 7 (SSE / edge sync)
+> **Repo HEAD:** `main` @ Plan 6 complete (PRs #12 + #13 merged)  
+> **Status:** Plans 1–6 done. Plan 7 plan doc ready for review.  
+> **Next session:** Review + land Plan 7 plan doc → implement SSE edge sync
 
 ---
 
@@ -68,11 +68,10 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ### What’s after Plan 6 (§13)
 
-1. **Sync event log + edge sync** (step 11)  
-2. **Go edge hardening** (step 12)  
-3. **Dashboard** (step 13)  
-4. **Bootstrap registry + seed** (step 14)  
-5. **Deploy / clients / reference integrations** (steps 15–18)
+1. **Go edge hardening** (step 12)  
+2. **Dashboard** (step 13)  
+3. **Bootstrap registry + seed** (step 14)  
+4. **Deploy / clients / reference integrations** (steps 15–18)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
@@ -88,6 +87,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-3-request-auth-protocol.md` | Plan 3 |
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
 | `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 |
+| `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` | Plan 7 |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
