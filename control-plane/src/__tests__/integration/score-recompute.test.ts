@@ -42,6 +42,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitUntil(
+  pred: () => boolean,
+  opts: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const intervalMs = opts.intervalMs ?? 20;
+  const deadline = Date.now() + timeoutMs;
+  while (!pred() && Date.now() < deadline) {
+    await delay(intervalMs);
+  }
+}
+
 describe('Score recompute (live RunVeriRank)', { skip: skipLive }, () => {
   let pool: pg.Pool;
   let harness: ControlPlaneHarness;
@@ -206,7 +218,7 @@ describe('Score recompute (live RunVeriRank)', { skip: skipLive }, () => {
     scheduler.markDirty();
     resolveGate();
     await runP;
-    await delay(80);
+    await waitUntil(() => calls.length >= 2);
     await scheduler.stop();
     setRecomputeSchedulerForTests(null);
 

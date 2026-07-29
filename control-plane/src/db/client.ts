@@ -20,5 +20,10 @@ export let pool = createPool();
 
 /** Recreate the singleton after `pool.end()` (multi-suite integration harness). */
 export function recreatePool(): void {
+  if (!pool.ended) {
+    throw new Error(
+      'recreatePool() called while the current pool is still open; call pool.end() first'
+    );
+  }
   pool = createPool();
 }

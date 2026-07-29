@@ -10,6 +10,7 @@ import { verifyAttestation, type KeyCandidate } from '../../grpc/trustEngineClie
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { withTransaction } from '../../db/transaction.js';
 import { getRecomputeScheduler } from '../graph/recomputeScheduler.js';
+import { logger } from '../../shared/logger.js';
 
 function sha256hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -232,7 +233,13 @@ export async function submitAttestation(opts: {
       }, client);
     });
     // Plan 6: enqueue score recompute after durable ingest (outside TX).
-    getRecomputeScheduler().markDirty();
+    // Isolate from write-path error mapping so a scheduler throw cannot
+    // turn a committed submit into CONFLICT / failed response.
+    try {
+      getRecomputeScheduler().markDirty();
+    } catch (err) {
+      logger.error({ err }, 'failed to enqueue score recompute after ingest');
+    }
     return row;
   } catch (err: any) {
     if (err instanceof AppError) throw err;

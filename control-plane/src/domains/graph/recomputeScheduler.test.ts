@@ -6,6 +6,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitUntil(
+  pred: () => boolean,
+  opts: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 1000;
+  const intervalMs = opts.intervalMs ?? 5;
+  const deadline = Date.now() + timeoutMs;
+  while (!pred() && Date.now() < deadline) {
+    await delay(intervalMs);
+  }
+}
+
 describe('RecomputeScheduler', () => {
   let calls: Date[];
   let gate: { release: () => void; wait: Promise<void> } | null;
@@ -47,8 +59,7 @@ describe('RecomputeScheduler', () => {
     scheduler.markDirty();
     resolveGate();
     await first;
-    // Allow follow-up loop to finish
-    await delay(20);
+    await waitUntil(() => calls.length >= 2);
     assert.equal(calls.length, 2);
   });
 

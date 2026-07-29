@@ -106,8 +106,9 @@ go test -tags=integration -count=1 ./...
 # Control plane
 cd control-plane && npm run test:unit
 # Needs local Postgres verilink_test (default URL uses 127.0.0.1:15432)
-# Score recompute integration also needs: go run ./cmd/trust-engine && TRUST_ENGINE_ADDR=127.0.0.1:9091
-cd control-plane && npm run test:integration
+# Score recompute integration also needs trust-engine running in another shell:
+#   go run ./cmd/trust-engine -grpc-port 9091 -http-port 8086
+cd control-plane && TRUST_ENGINE_ADDR=127.0.0.1:9091 npm run test:integration
 
 # Edge / trust-engine local
 go run ./cmd/edge-verifier

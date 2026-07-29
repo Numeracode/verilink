@@ -36,6 +36,11 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info('Shutting down...');
+    // Arm the watchdog before awaiting scheduler drain (gRPC / lock can stall).
+    const forceExit = setTimeout(() => {
+      logger.error('Forced shutdown after timeout');
+      process.exit(1);
+    }, 10000);
     try {
       await scheduler.stop();
     } catch (err) {
@@ -43,15 +48,10 @@ async function main() {
     }
     server.close(async () => {
       await pool.end();
+      clearTimeout(forceExit);
       logger.info('Bye.');
       process.exit(0);
     });
-
-    // Force close after 10s
-    setTimeout(() => {
-      logger.error('Forced shutdown after timeout');
-      process.exit(1);
-    }, 10000);
   };
 
   process.on('SIGTERM', shutdown);
