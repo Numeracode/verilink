@@ -51,10 +51,8 @@ export class RecomputeScheduler {
     // No-op until start() so integration suites that only exercise ingest
     // do not schedule background recomputes against a test pool.
     if (this.stopping || !this.started) return;
-    if (this.running) {
-      this.dirty = true;
-      return;
-    }
+    this.dirty = true;
+    if (this.running) return;
     this.scheduleDebounce();
   }
 
@@ -65,6 +63,7 @@ export class RecomputeScheduler {
       if (this.stopping) return;
       void this.kick();
     }, this.debounceMs);
+    this.debounceTimer.unref?.();
   }
 
   /** Entry used by hourly tick and debounce. */
@@ -75,6 +74,10 @@ export class RecomputeScheduler {
     if (this.running) {
       this.dirty = true;
       return this.activeRun ?? Promise.resolve();
+    }
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
     }
     this.running = true;
     this.activeRun = this.runLoop().finally(() => {

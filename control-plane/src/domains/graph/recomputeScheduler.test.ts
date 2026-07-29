@@ -128,4 +128,22 @@ describe('RecomputeScheduler', () => {
     assert.equal(calls.length, 0);
     await idle.stop();
   });
+
+  it('stop drains a pending debounced markDirty (idle path)', async () => {
+    await scheduler.stop();
+    const idleCalls: Date[] = [];
+    const idle = new RecomputeScheduler({
+      debounceMs: 5_000,
+      intervalMs: 60_000,
+      recompute: async (t) => {
+        idleCalls.push(t);
+      },
+    });
+    idle.start();
+    idle.markDirty();
+    assert.equal(idle.isDirty, true);
+    await idle.stop();
+    assert.equal(idleCalls.length, 1);
+    assert.equal(idle.isDirty, false);
+  });
 });

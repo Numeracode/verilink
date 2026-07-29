@@ -22,11 +22,16 @@ import {
   signAttestationToken,
 } from '../../testutil/seedData.js';
 import { startControlPlane, type ControlPlaneHarness } from '../../testutil/appHarness.js';
-import { recomputeNow } from '../../domains/graph/scoreComputationService.js';
-import {
-  RecomputeScheduler,
-  setRecomputeSchedulerForTests,
-} from '../../domains/graph/recomputeScheduler.js';
+
+// Score modules import config/pool at load time — load them after env defaults above
+// via dynamic import in before() (static ESM imports would evaluate first).
+type RecomputeNow = typeof import('../../domains/graph/scoreComputationService.js').recomputeNow;
+type SchedulerCtor = typeof import('../../domains/graph/recomputeScheduler.js').RecomputeScheduler;
+type SetScheduler = typeof import('../../domains/graph/recomputeScheduler.js').setRecomputeSchedulerForTests;
+
+let recomputeNow: RecomputeNow;
+let RecomputeScheduler: SchedulerCtor;
+let setRecomputeSchedulerForTests: SetScheduler;
 
 const trustEngineAddr = process.env.TRUST_ENGINE_ADDR;
 const inCi = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
@@ -61,6 +66,12 @@ describe('Score recompute (live RunVeriRank)', { skip: skipLive }, () => {
   let apiKey: string;
 
   before(async () => {
+    const scoreMod = await import('../../domains/graph/scoreComputationService.js');
+    const schedMod = await import('../../domains/graph/recomputeScheduler.js');
+    recomputeNow = scoreMod.recomputeNow;
+    RecomputeScheduler = schedMod.RecomputeScheduler;
+    setRecomputeSchedulerForTests = schedMod.setRecomputeSchedulerForTests;
+
     pool = await setupTestDb();
     harness = await startControlPlane();
   });
