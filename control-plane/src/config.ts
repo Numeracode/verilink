@@ -43,6 +43,17 @@ export const config = Object.freeze({
     debounceMs: optionalInt('SCORE_RECOMPUTE_DEBOUNCE_MS', 60_000),
     intervalMs: optionalInt('SCORE_RECOMPUTE_INTERVAL_MS', 3_600_000),
   }),
+  syncSse: Object.freeze({
+    pollIntervalMs: optionalInt('SYNC_SSE_POLL_INTERVAL_MS', 5000),
+    heartbeatIntervalMs: optionalInt('SYNC_SSE_HEARTBEAT_INTERVAL_MS', 30_000),
+    maxConnections: optionalInt('SYNC_SSE_MAX_CONNECTIONS', 100),
+    maxInitialBatch: optionalInt('SYNC_SSE_MAX_INITIAL_BATCH', 10_000),
+    writeQueueMax: optionalInt('SYNC_SSE_WRITE_QUEUE_MAX', 1024),
+    writeQueueMaxBytes: optionalInt('SYNC_SSE_WRITE_QUEUE_MAX_BYTES', 8_388_608),
+    maxFrameBytes: optionalInt('SYNC_SSE_MAX_FRAME_BYTES', 1_048_576),
+    slowClientMs: optionalInt('SYNC_SSE_SLOW_CLIENT_MS', 60_000),
+    shutdownDrainMs: optionalInt('SYNC_SSE_SHUTDOWN_DRAIN_MS', 5000),
+  }),
   server: Object.freeze({
     port: optionalInt('PORT', 3000),
     nodeEnv: optional('NODE_ENV', 'development'),
