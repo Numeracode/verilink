@@ -154,7 +154,7 @@ This plan **does not** finish edge sync hardening (step 11–12): no Redis, no W
 
 ### Task 3: Migrations + score writer (single transaction)
 
-- Ship `009` (deferrable FK), `010` (weight `[0,1]` + fail on out-of-range existing rows), `011` (`network_score_history.entity_kind`)
+- Ship `009`–`011` (`NOT VALID` adds) + `012` (separate-TX validate/swap), `010` fails loudly on out-of-range existing rows
 - Enforce `[0,1]` in `createIssuer` / bootstrap weight writers (API) in the same PR as migration `010`
 - `BEGIN` → `SELECT pg_advisory_xact_lock(8392018)` → allocate versions / write scores / history / events → `COMMIT` (lock released only by commit/rollback)
 - `appendEventWithClient` must **not** take or release any advisory lock
@@ -241,7 +241,7 @@ cd control-plane && npm run test:integration
 
 ## Suggested PR split
 
-1. **PR A:** migrations (`009`–`011`) + loader (expiry + active principals + shared `evaluationTime`) + writer (`pg_advisory_xact_lock`, history `entity_kind`) + empty-roots cold-start vs clear-stale + gRPC client + unit tests; live-engine integration optional/skippable when unset
+1. **PR A:** migrations (`009`–`012`) + loader (expiry + active principals + shared `evaluationTime`) + writer (`pg_advisory_xact_lock`, history `entity_kind`) + empty-roots cold-start vs clear-stale + gRPC client + unit tests; live-engine integration optional/skippable when unset
 2. **PR B:** single-flight scheduler (deterministic stop) + ingest hook + **mandatory** CI trust-engine + score-recompute integration + docs; Plan 6 complete only when this lands green
 
 Keep each PR reviewable; A can be validated with direct `recomputeNow` in tests.
