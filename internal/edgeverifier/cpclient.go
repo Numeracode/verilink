@@ -179,13 +179,7 @@ func loadWireScores(snap *Snapshot, scores []cpScoreWire) error {
 		if _, exists := snap.Scores[s.PrincipalID]; exists {
 			return fmt.Errorf("snapshot: duplicate principal_id %q", s.PrincipalID)
 		}
-		snap.Scores[s.PrincipalID] = ScoreEntry{
-			PrincipalID: s.PrincipalID,
-			EntityKind:  s.EntityKind,
-			Score:       s.Score,
-			Blacklisted: s.Blacklisted,
-			ScoreReason: s.ScoreReason,
-		}
+		snap.Scores[s.PrincipalID] = ScoreEntry(s)
 	}
 	return nil
 }
