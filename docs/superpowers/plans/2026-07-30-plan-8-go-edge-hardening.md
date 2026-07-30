@@ -12,11 +12,13 @@
 
 ## Review findings closure
 
-Filled during the docs PR review. Implementation must satisfy every row.
+All actionable comments from Qodo on PR #17 are locked below. Implementation must satisfy every row.
 
 | Source | Finding | Locked where |
 |--------|---------|--------------|
-| *(pending review)* | | |
+| Qodo | HANDOVER pointed at non-existent `docs/plan-8-go-edge-hardening` | `HANDOVER.md` header (this PR) |
+| Qodo | SSE `retry:` unit unspecified | Decision 5 |
+| Qodo | Disk snapshot omit directory fsync after rename | Decision 8; Task 3; Decision 12 |
 
 ---
 
@@ -59,10 +61,11 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
    3. Open SSE `GET /v1/sync/events` with `Last-Event-ID: <cursor>` and `Accept: text/event-stream`
 5. **SSE client behavior (implements Plan 7 Decision 16 + 12):**
    - Parse SSE frames; honor `retry:` preamble as base reconnect delay
+   - **`retry:` units = milliseconds** (Plan 7 emits `retry: <SYNC_SSE_POLL_INTERVAL_MS>`). Parse as a non-negative integer milliseconds value. If `retry:` is missing, non-numeric, negative, or zero → default base delay **`5000` ms** (same as control-plane poll default). Cap exponential backoff at **30000 ms**.
    - Handle durable events: `score.upsert`, `score.delete`, `key.upsert`, `key.revoke`, `policy.replace`
    - Handle non-durable `event: cursor` — advance resume cursor only (no state mutation beyond cursor)
    - Ignore SSE comments (`: ping`) except as **freshness bytes** (reset stale timer)
-   - **`event: shutdown`:** stop reading; close connection; reconnect with exponential backoff (base = `retry` / poll interval, cap 30s) after drain — do **not** treat as fatal
+   - **`event: shutdown`:** stop reading; close connection; reconnect with exponential backoff (base = parsed `retry` ms, cap 30s) after drain — do **not** treat as fatal
    - **`429` + `X-Verilink-Sync-Reason: backlog-cap` (or problem+json):** fetch full snapshot → atomic swap → disk persist → reconnect SSE with `Last-Event-ID = snapshot.highWaterVersion`
    - **`410 Gone`:** same recovery as `429` (retention path; may be rare until pruning ships)
    - **`503` / network errors:** backoff reconnect; if last authenticated bytes still within `max_snapshot_age_seconds`, serve in **degraded** mode; if stale, fail-closed unless `fail_open_expired`
@@ -80,7 +83,11 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
    - Unreachable but not stale → serve with `X-Verilink-Mode: degraded`
 8. **Atomic disk snapshots:**
    - Path configurable (`VERILINK_SNAPSHOT_PATH`, default under data dir)
-   - Write `snapshot.json.tmp` (or `.gz`) → `fsync` → `rename` over live file
+   - Durability sequence (crash-safe on common filesystems):
+     1. Write payload to `snapshot.json.tmp` (or `.gz`) in the same directory as the live file
+     2. `fsync` the temp file
+     3. `rename` temp → live name (atomic replace)
+     4. **`fsync` the containing directory** so the directory entry for the rename is durable (omitting this can lose the rename across power loss even after a successful file fsync)
    - Persist after initial fetch, after successful `429`/`410` recovery snapshot, and periodically after N durable applies or T seconds (defaults: every **100** durable events or **60s**, whichever first — mirror control-plane cursor cadence)
    - On-disk format includes `highWaterVersion` + scores + keys + policy; version the envelope (`schema_version: 1`)
 9. **Identity / scoring path upgrade (minimal for step 12):**
@@ -104,7 +111,7 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
     - `VERILINK_SYNC_ENABLED` (default true when URL+key set; false keeps MVP mock mode for local demos)
     - Existing: `-external-base-url`, `-require-signatures`, `-agent-keys-path` (agent-keys-path becomes **bootstrap-only / override** once sync keys land — document precedence: synced keys win when sync enabled)
 12. **Testing:**
-    - Unit: SSE parser (ping / cursor / durable / shutdown), snapshot atomic swap, idempotent apply, disk rename crash-safety (temp+rename), WAL drop-oldest + counter, stale mode gating
+    - Unit: SSE parser (ping / cursor / durable / shutdown; `retry:` ms parse + invalid fallback), snapshot atomic swap, idempotent apply, disk rename crash-safety (temp → file fsync → rename → **dir fsync**), WAL drop-oldest + counter, stale mode gating
     - Integration: edge against control-plane harness (or `httptest`) with fixture SSE + snapshot; assert `429` recovery reconnects at `highWaterVersion`; assert shutdown reconnects
     - Do **not** require live trust-engine for pure sync-client tests
 13. **Metrics (minimum):** `sse_bytes_age_seconds`, `snapshot_high_water`, `decisions_dropped_total`, `wal_bytes`, `sync_reconnects_total{reason=…}`
@@ -129,7 +136,8 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 
 ### Task 3: Disk snapshot persistence
 
-- `disk.go`: atomic write path; load on boot; schema_version envelope
+- `disk.go`: atomic write path per Decision 8 (temp write → file fsync → rename → **directory fsync**); load on boot; schema_version envelope
+- Unit: crash-safety sequence includes directory fsync after rename
 
 ### Task 4: Proxy integration
 
@@ -157,8 +165,8 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 ## Suggested PR split
 
 1. **Docs PR (this):** Plan 8 locked decisions + HANDOVER pointer
-2. **PR A:** `edgesnapshot` + `edgesync` (SSE + snapshot apply + disk) + proxy read-path integration + units
-3. **PR B:** `edgewal` + flush interface + metrics + integration tests against CP sync fixtures
+2. **PR A:** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path integration + units
+3. **PR B:** WAL + flush interface + metrics + integration tests against CP sync fixtures
 4. **PR C (optional / if blocked):** control-plane decision batch ingest HTTP route wiring to existing `decision_*` tables — only if not already present when PR B starts
 
 ---
@@ -166,9 +174,8 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 ## Verification
 
 ```bash
-go test ./internal/edgesnapshot/... ./internal/edgesync/... ./internal/edgewal/...
 go test ./internal/edgeverifier/... ./cmd/edge-verifier/...
-go test -tags=integration ./cmd/edge-verifier/...   # when harness added
+go test -tags=integration ./cmd/edge-verifier/...   # when harness extended
 go vet ./...
 ```
 

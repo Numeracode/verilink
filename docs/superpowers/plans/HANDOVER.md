@@ -2,7 +2,7 @@
 
 > **Updated:** 2026-07-30  
 > **Repo HEAD:** `main` @ Plan 7 complete (PR #15 + #16)  
-> **Status:** Plans 1–7 done. Plan 8 docs in progress (`docs/plan-8-go-edge-hardening`).  
+> **Status:** Plans 1–7 done. Plan 8 docs in progress (`docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md`, PR #17).  
 > **Next session:** Land Plan 8 plan doc → implement Go edge SSE client / snapshot / WAL
 
 ---
