@@ -4,6 +4,7 @@ import { runMigrations } from './db/migrate.js';
 import { createApp } from './app.js';
 import { logger } from './shared/logger.js';
 import { getRecomputeScheduler } from './domains/graph/recomputeScheduler.js';
+import { getSseRegistry } from './domains/sync/sseRegistry.js';
 
 async function main() {
   // Validate config
@@ -36,11 +37,16 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info('Shutting down...');
-    // Arm the watchdog before awaiting scheduler drain (gRPC / lock can stall).
+    // Arm the watchdog before awaiting drains (gRPC / lock / SSE can stall).
     const forceExit = setTimeout(() => {
       logger.error('Forced shutdown after timeout');
       process.exit(1);
-    }, 10000);
+    }, config.syncSse.shutdownDrainMs + 5000);
+    try {
+      await getSseRegistry().shutdownAll(config.syncSse.shutdownDrainMs);
+    } catch (err) {
+      logger.error({ err }, 'SSE shutdown failed');
+    }
     try {
       await scheduler.stop();
     } catch (err) {

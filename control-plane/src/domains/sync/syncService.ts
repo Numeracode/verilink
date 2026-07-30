@@ -69,3 +69,11 @@ export async function getEventsSince(sinceVersion: number, tenantId?: string) {
 export async function getHighWaterVersion(): Promise<number> {
   return syncRepo.getHighWaterVersion();
 }
+
+export async function getInitialBatchWithHighWater(
+  sinceVersion: bigint,
+  tenantId: string | undefined,
+  maxBatch: number
+) {
+  return syncRepo.getInitialBatchWithHighWater(sinceVersion, tenantId, maxBatch);
+}

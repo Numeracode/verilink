@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-29  
-> **Repo HEAD:** `main` @ Plan 6 complete (PRs #12 + #13 merged)  
-> **Status:** Plans 1–6 done. Plan 7 plan doc ready for review.  
-> **Next session:** Review + land Plan 7 plan doc → implement SSE edge sync
+> **Repo HEAD:** `main` @ Plan 7 plan doc merged (PR #14)  
+> **Status:** Plans 1–6 done. Plan 7 implementation in progress (`feat/sse-edge-sync`).  
+> **Next session:** Finish Plan 7 PR A (SSE handler) → PR B (integration + cursors)
 
 ---
 
@@ -67,11 +67,11 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 7 — SSE edge sync — READY TO EXECUTE
+## Plan 7 — SSE edge sync — IN PROGRESS
 
-- Plan doc: `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md`
+- Plan doc: `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` (merged PR #14)
 - Design: §4.5 steps 3–5 + §13 step 11
-- **This PR (#14):** plan doc + handover only
+- **Branch:** `feat/sse-edge-sync` — PR A: long-lived SSE + heartbeat + backlog `429` + snapshot compression + graceful `shutdown`
 
 ### What’s after Plan 7 (§13)
 
