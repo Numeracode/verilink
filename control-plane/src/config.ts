@@ -53,6 +53,8 @@ export const config = Object.freeze({
     maxFrameBytes: optionalInt('SYNC_SSE_MAX_FRAME_BYTES', 1_048_576),
     slowClientMs: optionalInt('SYNC_SSE_SLOW_CLIENT_MS', 60_000),
     shutdownDrainMs: optionalInt('SYNC_SSE_SHUTDOWN_DRAIN_MS', 5000),
+    cursorPersistIntervalMs: optionalInt('SYNC_SSE_CURSOR_PERSIST_INTERVAL_MS', 60_000),
+    cursorPersistEveryEvents: optionalInt('SYNC_SSE_CURSOR_PERSIST_EVERY_EVENTS', 100),
   }),
   server: Object.freeze({
     port: optionalInt('PORT', 3000),

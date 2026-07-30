@@ -108,6 +108,7 @@ router.get('/events', async (req: Request, res: Response, next: NextFunction) =>
       res,
       lastEventId: parsed.value,
       tenantId,
+      apiKeyId: req.user?.apiKeyId,
       initialEvents: batch.events,
       initialHighWater: batch.highWater,
     });
