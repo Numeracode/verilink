@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-30  
-> **Repo HEAD:** `main` @ Plan 7 PR A merged (PR #15)  
-> **Status:** Plans 1–6 done. Plan 7 PR B in progress (`feat/sse-edge-sync-pr-b`).  
-> **Next session:** Land Plan 7 PR B → Plan 8 Go edge SSE client
+> **Repo HEAD:** `main` @ Plan 7 complete (PR #15 + #16)  
+> **Status:** Plans 1–7 done. Plan 8 docs in progress (`docs/plan-8-go-edge-hardening`).  
+> **Next session:** Land Plan 8 plan doc → implement Go edge SSE client / snapshot / WAL
 
 ---
 
@@ -67,19 +67,27 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 7 — SSE edge sync — IN PROGRESS (PR B)
+## Plan 7 — SSE edge sync — DONE
 
 - Plan doc: `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` (merged PR #14)
 - Design: §4.5 steps 3–5 + §13 step 11
 - **PR A (#15):** long-lived SSE + heartbeat + backlog `429` + snapshot compression + graceful `shutdown` — **merged**
-- **PR B (#16):** integration suite + `sync_cursors` + `/v1/admin/sync/lag` + docs — **open**
+- **PR B (#16):** integration suite + `sync_cursors` + `/v1/admin/sync/lag` + tenant-scoped lag fixes — **merged**
 
-### What’s after Plan 7 (§13)
+---
 
-1. **Go edge hardening** (step 12) — SSE client, atomic snapshot, WAL  
-2. **Dashboard** (step 13)  
-3. **Bootstrap registry + seed** (step 14)  
-4. **Deploy / clients / reference integrations** (steps 15–18)
+## Plan 8 — Go edge hardening — IN PROGRESS (docs)
+
+- Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md`
+- Design: §4.5 + §4.7 + §13 step 12
+- **Scope:** SSE client (`shutdown` / `429`/`410` recovery), atomic in-memory + disk snapshot, bounded decision WAL
+- **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state
+
+### What’s after Plan 8 (§13)
+
+1. **Dashboard** (step 13)  
+2. **Bootstrap registry + seed** (step 14)  
+3. **Deploy / clients / reference integrations** (steps 15–18)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
@@ -96,6 +104,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-27-verilink-4-attestation-ingest.md` | Plan 4 |
 | `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 |
 | `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` | Plan 7 |
+| `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` | Plan 8 |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
