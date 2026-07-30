@@ -78,7 +78,7 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ## Plan 8 — Go edge hardening — IN PROGRESS (docs)
 
-- Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md`
+- Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` (**PR #17**)
 - Design: §4.5 + §4.7 + §13 step 12
 - **Scope:** SSE client (`shutdown` / `429`/`410` recovery), atomic in-memory + disk snapshot, bounded decision WAL
 - **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state

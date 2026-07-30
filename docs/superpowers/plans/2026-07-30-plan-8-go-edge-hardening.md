@@ -46,7 +46,7 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
    - `internal/edgesnapshot/` — immutable in-memory snapshot + atomic swap API
    - `internal/edgewal/` — bounded decision WAL + flush worker
    - Wire from `cmd/edge-verifier`; keep `internal/edgeverifier` as the HTTP proxy that **reads** the live snapshot (and optionally records decisions into the WAL)
-3. **Auth to control plane:** edge uses a tenant API key (`Authorization: Bearer vrl_…`) with scopes sufficient for sync (`attest:read` is enough today for `/v1/sync/*`; do not invent new scopes in Plan 8 unless a gate appears). Config: `VERILINK_CONTROL_PLANE_URL`, `VERILINK_API_KEY`.
+3. **Auth to control plane:** edge uses a tenant API key (`Authorization: Bearer vrl_…`). Sync routes today are `apiKeyOnly` (any valid key for the tenant — no extra scope gate). Config: `VERILINK_CONTROL_PLANE_URL`, `VERILINK_API_KEY`. Do not invent new scopes in Plan 8 unless a gate is added on the CP side.
 4. **Bootstrap sequence on edge start:**
    1. If a valid on-disk snapshot exists → load into memory (atomic swap), set cursor = `highWaterVersion`
    2. Else → `GET /v1/sync/snapshot` (gzip accepted), apply atomically, persist to disk, set cursor
