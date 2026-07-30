@@ -79,6 +79,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Setup buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
 
@@ -87,11 +93,21 @@ jobs:
 
       - name: Check generated code
         run: |
+          # Local plugins — do not call buf.build remote plugin hosts.
+          # Prefer GOBIN when set; otherwise GOPATH/bin (setup-go default).
+          GOBIN_DIR="$(go env GOBIN)"
+          if [ -z "$GOBIN_DIR" ]; then
+            GOBIN_DIR="$(go env GOPATH)/bin"
+          fi
+          echo "$GOBIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$GOBIN_DIR:$PATH"
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
           go install golang.org/x/tools/cmd/goimports@latest
           cd proto
           buf generate --template ../buf.gen.yaml
           cd ..
-          "$(go env GOPATH)/bin/goimports" -w pkg/trustpb/trust.pb.go pkg/trustpb/trust_grpc.pb.go
+          goimports -w pkg/trustpb/trust.pb.go pkg/trustpb/trust_grpc.pb.go
           git diff --exit-code -- pkg/trustpb
 
   go-integration:
