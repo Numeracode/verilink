@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/messagesgoel-blip/verilink/internal/edgeverifier"
@@ -18,15 +22,28 @@ func main() {
 		externalBaseURL   string
 		agentKeysPath     string
 		requireSignatures bool
+		controlPlaneURL   string
+		apiKey            string
+		snapshotPath      string
+		syncEnabled       bool
 	)
 
 	flag.StringVar(&externalBaseURL, "external-base-url", "", "Base URL for @target-uri construction (mandatory behind a TLS-terminating proxy)")
-	flag.StringVar(&agentKeysPath, "agent-keys-path", "", "Path to agent keys JSON file")
+	flag.StringVar(&agentKeysPath, "agent-keys-path", "", "Path to agent keys JSON file (demo/bootstrap; synced keys win when sync enabled)")
 	flag.BoolVar(&requireSignatures, "require-signatures", false, "Require RFC 9421 signatures on all requests")
+	flag.StringVar(&controlPlaneURL, "control-plane-url", envOr("VERILINK_CONTROL_PLANE_URL", ""), "Control plane base URL")
+	flag.StringVar(&apiKey, "api-key", envOr("VERILINK_API_KEY", ""), "Control plane API key")
+	flag.StringVar(&snapshotPath, "snapshot-path", envOr("VERILINK_SNAPSHOT_PATH", ""), "On-disk snapshot path")
+	flag.BoolVar(&syncEnabled, "sync", false, "Enable control-plane sync (also true when URL+key set unless VERILINK_SYNC_ENABLED=false)")
 	flag.Parse()
 
-	ts := verifier.NewMockTrustStore()
+	if v := os.Getenv("VERILINK_SYNC_ENABLED"); v == "false" || v == "0" {
+		syncEnabled = false
+	} else if controlPlaneURL != "" && apiKey != "" {
+		syncEnabled = true
+	}
 
+	ts := verifier.NewMockTrustStore()
 	trustedData := fingerprint.RequestData{
 		JA4:      "test-ja4",
 		Protocol: "HTTP/1.1",
@@ -52,6 +69,38 @@ func main() {
 	nonceCache := requestsigin.NewNonceCache(5 * time.Minute)
 	defer nonceCache.Stop()
 
+	var snapStore *edgeverifier.Store
+	var syncCancel context.CancelFunc
+	if syncEnabled {
+		if controlPlaneURL == "" || apiKey == "" {
+			log.Fatal("sync enabled requires -control-plane-url / VERILINK_CONTROL_PLANE_URL and -api-key / VERILINK_API_KEY")
+		}
+		snapStore = edgeverifier.NewStore()
+		client := &edgeverifier.ControlPlaneClient{
+			BaseURL: controlPlaneURL,
+			APIKey:  apiKey,
+			HTTPClient: &http.Client{
+				Timeout: 0, // SSE is long-lived; per-request timeouts set on snapshot via context
+			},
+		}
+		// Snapshot fetch needs a timeout — use a client with timeout for bootstrap via context.
+		runner := edgeverifier.NewSyncRunner(client, snapStore, snapshotPath)
+		syncCtx, cancel := context.WithCancel(context.Background())
+		syncCancel = cancel
+		bootCtx, bootCancel := context.WithTimeout(syncCtx, 30*time.Second)
+		if err := runner.Bootstrap(bootCtx); err != nil {
+			bootCancel()
+			log.Fatalf("sync bootstrap: %v", err)
+		}
+		bootCancel()
+		go func() {
+			if err := runner.Run(syncCtx); err != nil && syncCtx.Err() == nil {
+				log.Printf("sync runner stopped: %v", err)
+			}
+		}()
+		log.Printf("Control-plane sync enabled against %s", controlPlaneURL)
+	}
+
 	mockBackend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "Welcome, verified agent! You have reached the backend API.")
 	})
@@ -70,7 +119,9 @@ func main() {
 		}
 	}()
 
-	proxy, err := edgeverifier.NewEdgeVerifierProxy("http://localhost:8081", ts, registry, nonceCache, requireSignatures, externalBaseURL)
+	proxy, err := edgeverifier.NewEdgeVerifierProxyWithSnapshot(
+		"http://localhost:8081", ts, registry, nonceCache, requireSignatures, externalBaseURL, snapStore,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -84,5 +135,29 @@ func main() {
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	log.Fatal(server.ListenAndServe())
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Printf("shutting down…")
+		if syncCancel != nil {
+			syncCancel()
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		_ = backendServer.Shutdown(shutdownCtx)
+	}()
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
