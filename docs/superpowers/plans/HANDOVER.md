@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-30  
-> **Repo HEAD:** `main` @ Plan 8 docs merged (PR #17)  
-> **Status:** Plans 1–7 done. Plan 8 PR A in progress (`feat/go-edge-hardening-pr-a`).  
-> **Next session:** Land Plan 8 PR A (SSE client + snapshot) → PR B (WAL)
+> **Repo HEAD:** `main` @ Plan 8 PR A + Proto local-plugins fix  
+> **Status:** Plans 1–8 PR A done. Plan 8 PR B in progress (`feat/go-edge-hardening-pr-b`).  
+> **Next session:** Land Plan 8 PR B (decision WAL + flush + metrics) → dashboard (design §13 step 13)
 
 ---
 
@@ -76,12 +76,13 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 8 — Go edge hardening — IN PROGRESS (PR A)
+## Plan 8 — Go edge hardening — IN PROGRESS (PR B)
 
 - Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` (merged PR #17)
 - Design: §4.5 + §4.7 + §13 step 12
-- **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **open**
-- **PR B:** decision WAL + flush + metrics
+- **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **merged**
+- **PR B:** decision WAL + flush interface (stub transport) + metrics — **in progress**
+- **PR C (optional):** control-plane decision batch ingest HTTP — if still missing when B lands
 - **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state
 
 ### What’s after Plan 8 (§13)

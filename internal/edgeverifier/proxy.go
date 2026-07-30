@@ -3,6 +3,7 @@ package edgeverifier
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,8 @@ type EdgeVerifierProxy struct {
 	externalBaseURL   string
 	snapshot          *Store
 	syncReachable     atomic.Bool
+	wal               *DecisionWAL
+	metrics           *Metrics
 }
 
 // NewEdgeVerifierProxy creates the proxy (demo / test path without sync snapshot).
@@ -40,6 +43,21 @@ func NewEdgeVerifierProxy(target string, ts verifier.TrustStore, registry *reque
 // NewEdgeVerifierProxyWithSnapshot creates the proxy. When snapshot is non-nil,
 // keys and principal scores come from the synced store (Plan 8).
 func NewEdgeVerifierProxyWithSnapshot(target string, ts verifier.TrustStore, registry *requestsigin.AgentRegistry, nonceCache *requestsigin.NonceCache, requireSigs bool, externalBaseURL string, snapshot *Store) (*EdgeVerifierProxy, error) {
+	return NewEdgeVerifierProxyFull(target, ts, registry, nonceCache, requireSigs, externalBaseURL, snapshot, nil, nil)
+}
+
+// NewEdgeVerifierProxyFull creates the proxy with optional WAL + metrics.
+func NewEdgeVerifierProxyFull(
+	target string,
+	ts verifier.TrustStore,
+	registry *requestsigin.AgentRegistry,
+	nonceCache *requestsigin.NonceCache,
+	requireSigs bool,
+	externalBaseURL string,
+	snapshot *Store,
+	wal *DecisionWAL,
+	metrics *Metrics,
+) (*EdgeVerifierProxy, error) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err
@@ -53,6 +71,8 @@ func NewEdgeVerifierProxyWithSnapshot(target string, ts verifier.TrustStore, reg
 		requireSignatures: requireSigs,
 		externalBaseURL:   strings.TrimRight(externalBaseURL, "/"),
 		snapshot:          snapshot,
+		wal:               wal,
+		metrics:           metrics,
 	}
 	p.syncReachable.Store(true)
 	return p, nil
@@ -65,6 +85,9 @@ func (p *EdgeVerifierProxy) SetSyncReachable(ok bool) {
 
 // ServeHTTP implements the three-way outcome model.
 func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.metrics != nil {
+		p.metrics.ObserveStore(p.snapshot)
+	}
 	if mode := EvaluateMode(p.snapshot, p.syncReachable.Load(), time.Now()); mode != ModeOK {
 		w.Header().Set("X-Verilink-Mode", string(mode))
 		if mode == ModeStale {
@@ -93,6 +116,7 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if parseErr != nil {
 			log.Printf("INVALID_SIG: method=%s uri=%s reason=%v", r.Method, r.URL, parseErr)
 			w.Header().Set("X-Verilink-Auth-Status", "invalid-signature")
+			p.recordDecision(r, Decision{Action: "deny", ScoreReason: "invalid-signature"})
 			http.Error(w, "Unauthorized: Invalid HTTP Message Signature", http.StatusUnauthorized)
 			return
 		}
@@ -109,6 +133,7 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("INVALID_SIG: method=%s uri=%s reason=%v", r.Method, r.URL, err)
 			w.Header().Set("X-Verilink-Auth-Status", "invalid-signature")
+			p.recordDecision(r, Decision{Action: "deny", ScoreReason: "invalid-signature"})
 			http.Error(w, "Unauthorized: Invalid HTTP Message Signature", http.StatusUnauthorized)
 			return
 		}
@@ -117,24 +142,39 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !p.nonceCache.CheckAndConsume(si.Nonce, si.KeyID) {
 				log.Printf("REPLAY: method=%s uri=%s keyid=%s nonce=%s", r.Method, r.URL, si.KeyID, si.Nonce)
 				w.Header().Set("X-Verilink-Auth-Status", "replay-detected")
+				p.recordDecision(r, Decision{Action: "deny", ScoreReason: "replay-detected"})
 				http.Error(w, "Unauthorized: Replay detected", http.StatusUnauthorized)
 				return
 			}
 		}
 
-		denied, reason := p.annotateTrust(w, r, si.KeyID)
+		denied, reason, principalID, score, blacklisted := p.annotateTrust(w, r, si.KeyID)
 		if denied {
 			log.Printf("DENIED: method=%s uri=%s reason=%s", r.Method, r.URL, reason)
 			w.Header().Set("X-Verilink-Auth-Status", "denied")
 			if reason != "" {
 				w.Header().Set("X-Verilink-Reason", reason)
 			}
+			p.recordDecision(r, Decision{
+				PrincipalID: principalID,
+				Score:       score,
+				Blacklisted: blacklisted,
+				ScoreReason: reason,
+				Action:      "deny",
+			})
 			http.Error(w, "Forbidden: trust policy denied", http.StatusForbidden)
 			return
 		}
 
 		log.Printf("SIGNED: method=%s uri=%s", r.Method, r.URL)
 		w.Header().Set("X-Verilink-Auth-Status", "signed-verified")
+		p.recordDecision(r, Decision{
+			PrincipalID: principalID,
+			Score:       score,
+			Blacklisted: blacklisted,
+			ScoreReason: reason,
+			Action:      "allow",
+		})
 		p.proxy.ServeHTTP(w, r)
 		return
 	}
@@ -143,12 +183,14 @@ func (p *EdgeVerifierProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if requireSig {
 		log.Printf("UNSIGNED_REJECTED: method=%s uri=%s", r.Method, r.URL)
 		w.Header().Set("X-Verilink-Auth-Status", "unsigned-rejected")
+		p.recordDecision(r, Decision{Action: "deny", ScoreReason: "unsigned-rejected"})
 		http.Error(w, "Unauthorized: Request must be signed", http.StatusUnauthorized)
 		return
 	}
 
 	log.Printf("UNSIGNED_PASSTHROUGH: method=%s uri=%s", r.Method, r.URL)
 	w.Header().Set("X-Verilink-Auth-Status", "unsigned-passthrough")
+	p.recordDecision(r, Decision{Action: "passthrough", ScoreReason: "unsigned"})
 	p.proxy.ServeHTTP(w, r)
 }
 
@@ -159,22 +201,25 @@ func (p *EdgeVerifierProxy) lookupPublicKey(keyid string) (ed25519.PublicKey, er
 	return p.registry.GetPublicKey(keyid)
 }
 
-func (p *EdgeVerifierProxy) annotateTrust(w http.ResponseWriter, r *http.Request, keyID string) (denied bool, reason string) {
+func (p *EdgeVerifierProxy) annotateTrust(w http.ResponseWriter, r *http.Request, keyID string) (denied bool, reason, principalID string, score int, blacklisted bool) {
 	if p.snapshot != nil && p.snapshot.Load() != nil {
 		key, ok := p.snapshot.LookupKey(keyID, time.Now())
 		if !ok {
-			return true, "unknown-key"
+			return true, "unknown-key", "", 0, false
 		}
+		principalID = key.PrincipalID
 		allow, score, scoreReason := AllowByScore(p.snapshot, key.PrincipalID)
+		entry, _ := p.snapshot.LookupScore(key.PrincipalID)
+		blacklisted = entry.Blacklisted
 		w.Header().Set("X-Verilink-Trust-Score", fmt.Sprintf("%d", score))
 		w.Header().Set("X-Verilink-Principal", key.PrincipalID)
 		if scoreReason != "" {
 			w.Header().Set("X-Verilink-Score-Reason", scoreReason)
 		}
 		if !allow {
-			return true, scoreReason
+			return true, scoreReason, principalID, score, blacklisted
 		}
-		return false, ""
+		return false, scoreReason, principalID, score, blacklisted
 	}
 	if p.trustStore != nil {
 		fpData := fingerprint.RequestData{
@@ -188,7 +233,47 @@ func (p *EdgeVerifierProxy) annotateTrust(w http.ResponseWriter, r *http.Request
 			w.Header().Set("X-Verilink-Trust-Score", fmt.Sprintf("%d", score))
 		}
 	}
-	return false, ""
+	return false, "", "", 0, false
+}
+
+func (p *EdgeVerifierProxy) recordDecision(r *http.Request, d Decision) {
+	if p == nil || p.wal == nil {
+		return
+	}
+	if d.Fingerprint == "" {
+		d.Fingerprint = requestFingerprint(r)
+	}
+	if d.DecidedAt.IsZero() {
+		d.DecidedAt = time.Now().UTC()
+	}
+	if err := p.wal.Append(d); err != nil {
+		if errors.Is(err, ErrWALFull) {
+			log.Printf("WAL_FULL: action=%s fingerprint=%s", d.Action, d.Fingerprint)
+			return
+		}
+		log.Printf("WAL_APPEND: %v", err)
+	}
+	if pol := p.snapshot; pol != nil {
+		if active := pol.ActivePolicy(); active != nil {
+			p.wal.SetNoDrop(active.NoDropDecisions)
+		}
+	}
+}
+
+func requestFingerprint(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	fpData := fingerprint.RequestData{
+		JA4:      r.Header.Get("X-JA4-Fingerprint"),
+		Protocol: r.Proto,
+		Headers:  map[string]string{"User-Agent": r.UserAgent()},
+	}
+	fp, err := fingerprint.Generate(fpData)
+	if err != nil {
+		return ""
+	}
+	return fp
 }
 
 func (p *EdgeVerifierProxy) buildTargetURI(r *http.Request) string {

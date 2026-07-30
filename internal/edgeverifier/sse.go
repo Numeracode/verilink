@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,7 @@ type SyncRunner struct {
 	SnapshotPath string
 	Logger       *log.Logger
 	OnReachable  func(bool)
+	Metrics      *Metrics
 
 	persistEveryEvents  int
 	persistEvery        time.Duration
@@ -52,6 +54,13 @@ func WithPersistCadence(everyEvents int, every time.Duration) SyncRunnerOption {
 func WithOnReachable(fn func(bool)) SyncRunnerOption {
 	return func(r *SyncRunner) {
 		r.OnReachable = fn
+	}
+}
+
+// WithMetrics attaches edge metrics (reconnect counters, store gauges).
+func WithMetrics(m *Metrics) SyncRunnerOption {
+	return func(r *SyncRunner) {
+		r.Metrics = m
 	}
 }
 
@@ -116,6 +125,10 @@ func (r *SyncRunner) Run(ctx context.Context) error {
 		}
 		retryMs, err := r.runSession(ctx)
 		r.setReachable(false)
+		if r.Metrics != nil {
+			r.Metrics.ObserveStore(r.Store)
+			r.Metrics.IncSyncReconnect(reconnectReason(err))
+		}
 		// Only adopt server-provided retry:; otherwise preserve exponential backoff.
 		if retryMs > 0 {
 			backoffMs = minInt(retryMs, maxBackoffMs)
@@ -412,4 +425,25 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func reconnectReason(err error) string {
+	if err == nil {
+		return "eof"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "shutdown"):
+		return "shutdown"
+	case strings.Contains(msg, "recovered from 429"):
+		return "backlog"
+	case strings.Contains(msg, "recovered from 410"):
+		return "gone"
+	case strings.Contains(msg, "unavailable"):
+		return "unavailable"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "canceled"
+	default:
+		return "error"
+	}
 }
