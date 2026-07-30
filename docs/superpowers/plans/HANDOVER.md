@@ -72,7 +72,7 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 - Plan doc: `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` (merged PR #14)
 - Design: §4.5 steps 3–5 + §13 step 11
 - **PR A (#15):** long-lived SSE + heartbeat + backlog `429` + snapshot compression + graceful `shutdown` — **merged**
-- **PR B:** integration suite + `sync_cursors` + `/v1/admin/sync/lag` + docs
+- **PR B (#16):** integration suite + `sync_cursors` + `/v1/admin/sync/lag` + docs — **open**
 
 ### What’s after Plan 7 (§13)
 
