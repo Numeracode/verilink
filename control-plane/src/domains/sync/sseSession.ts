@@ -4,6 +4,7 @@ import { config } from '../../config.js';
 import { logger } from '../../shared/logger.js';
 import * as syncRepo from './syncRepository.js';
 import type { SyncEvent } from './syncRepository.js';
+import * as syncCursorRepo from './syncCursorRepository.js';
 import {
   SseWriteQueue,
   formatSseComment,
@@ -55,7 +56,6 @@ async function enqueueIncremental(
     if (result === 'ok' || result === 'oversized' || result === 'closed') {
       return result;
     }
-    // full — wait for space
     const space = await queue.waitForSpace(Buffer.byteLength(frame), signal);
     if (space === 'closed') return 'closed';
   }
@@ -66,10 +66,11 @@ export async function runSseSession(opts: {
   res: Response;
   lastEventId: bigint;
   tenantId: string | undefined;
+  apiKeyId: string | undefined;
   initialEvents: SyncEvent[];
   initialHighWater: bigint;
 }): Promise<void> {
-  const { req, res, tenantId, initialEvents, initialHighWater } = opts;
+  const { req, res, tenantId, apiKeyId, initialEvents, initialHighWater } = opts;
   const sse = config.syncSse;
   const registry = getSseRegistry();
   const abort = new AbortController();
@@ -87,19 +88,45 @@ export async function runSseSession(opts: {
   });
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let lastEmittedHw = -1n; // force bootstrap cursor even when hw=0
+  let persistTimer: ReturnType<typeof setInterval> | null = null;
+  let lastEmittedHw = -1n;
+  let durableEventsWritten = 0;
+  let edgeNodeId: string | null = null;
+  let cleaned = false;
+
+  if (tenantId && apiKeyId) {
+    try {
+      edgeNodeId = await syncCursorRepo.resolveEdgeNodeForApiKey(tenantId, apiKeyId);
+    } catch (err) {
+      logger.warn({ err }, 'failed to resolve edge_node for SSE session');
+    }
+  }
+
+  const persistCursor = async () => {
+    if (!tenantId || !edgeNodeId) return;
+    const written = queue.writtenCursor;
+    if (written === null) return;
+    await syncCursorRepo.upsertSyncCursor({
+      tenantId,
+      edgeNodeId,
+      lastCursor: written,
+    });
+  };
 
   const cleanup = () => {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (persistTimer) {
+      clearInterval(persistTimer);
+      persistTimer = null;
+    }
     queue.close();
   };
 
   const conn = registry.tryRegister(queue, abort, cleanup);
   if (!conn) {
-    // Should have been gated before headers; defensive.
     cleanup();
     if (!res.headersSent) {
       res.status(503).json({
@@ -112,37 +139,38 @@ export async function runSseSession(opts: {
     return;
   }
 
-  const unregister = () => {
+  const finish = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    abort.abort();
+    await persistCursor();
     registry.unregister(conn.id);
     cleanup();
   };
 
   req.on('close', () => {
-    abort.abort();
-    unregister();
+    void finish();
   });
 
   res.write(`retry: ${sse.pollIntervalMs}\n\n`);
 
-  // Initial batch
   for (const ev of initialEvents) {
     const { frame, cursor, size } = eventFrame(ev);
     if (size > sse.maxFrameBytes) {
       logger.warn({ syncVersion: ev.sync_version }, 'SSE durable frame exceeds max size');
-      abort.abort();
-      unregister();
+      await finish();
       res.end();
       return;
     }
     const result = await enqueueIncremental(queue, frame, cursor, abort.signal);
     if (result !== 'ok') {
-      unregister();
+      await finish();
       res.end();
       return;
     }
+    durableEventsWritten += 1;
   }
 
-  // Bootstrap cursor (Decision 4)
   {
     const frame = formatSseEvent({
       id: initialHighWater,
@@ -151,7 +179,7 @@ export async function runSseSession(opts: {
     });
     const result = await enqueueIncremental(queue, frame, initialHighWater, abort.signal);
     if (result !== 'ok') {
-      unregister();
+      await finish();
       res.end();
       return;
     }
@@ -161,8 +189,12 @@ export async function runSseSession(opts: {
   heartbeatTimer = setInterval(() => {
     void enqueueIncremental(queue, formatSseComment('ping'), undefined, abort.signal);
   }, sse.heartbeatIntervalMs);
-  // Allow process to exit with open SSE in tests
   if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+
+  persistTimer = setInterval(() => {
+    void persistCursor();
+  }, sse.cursorPersistIntervalMs);
+  if (typeof persistTimer.unref === 'function') persistTimer.unref();
 
   try {
     while (!abort.signal.aborted) {
@@ -197,6 +229,11 @@ export async function runSseSession(opts: {
           abort.abort();
           break;
         }
+        durableEventsWritten += 1;
+        if (durableEventsWritten >= sse.cursorPersistEveryEvents) {
+          durableEventsWritten = 0;
+          await persistCursor();
+        }
       }
       if (highWater > lastEmittedHw) {
         const frame = formatSseEvent({
@@ -216,7 +253,7 @@ export async function runSseSession(opts: {
   } catch {
     // aborted or disconnect
   } finally {
-    unregister();
+    await finish();
     if (!res.writableEnded) {
       try {
         res.end();
