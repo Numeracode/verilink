@@ -76,61 +76,36 @@ func (c *ControlPlaneClient) FetchSnapshot(ctx context.Context) (*Snapshot, erro
 	return parseSnapshotJSON(data)
 }
 
+type cpScoreWire struct {
+	PrincipalID string `json:"principal_id"`
+	EntityKind  string `json:"entity_kind"`
+	Score       int    `json:"score"`
+	Blacklisted bool   `json:"blacklisted"`
+	ScoreReason string `json:"score_reason"`
+}
+
+type cpKeyWire struct {
+	PrincipalID  string  `json:"principal_id"`
+	KeyID        string  `json:"key_id"`
+	PublicKeyRaw string  `json:"public_key_raw"`
+	ValidFrom    string  `json:"valid_from"`
+	ValidUntil   *string `json:"valid_until"`
+}
+
 type cpSnapshotWire struct {
 	OK   bool `json:"ok"`
 	Data struct {
-		HighWaterVersion json.Number `json:"highWaterVersion"`
-		Scores           []struct {
-			PrincipalID string `json:"principal_id"`
-			EntityKind  string `json:"entity_kind"`
-			Score       int    `json:"score"`
-			Blacklisted bool   `json:"blacklisted"`
-			ScoreReason string `json:"score_reason"`
-		} `json:"scores"`
-		Keys []struct {
-			PrincipalID  string  `json:"principal_id"`
-			KeyID        string  `json:"key_id"`
-			PublicKeyRaw string  `json:"public_key_raw"`
-			ValidFrom    string  `json:"valid_from"`
-			ValidUntil   *string `json:"valid_until"`
-		} `json:"keys"`
-		Policy json.RawMessage `json:"policy"`
+		HighWaterVersion json.Number     `json:"highWaterVersion"`
+		Scores           []cpScoreWire   `json:"scores"`
+		Keys             []cpKeyWire     `json:"keys"`
+		Policy           json.RawMessage `json:"policy"`
 	} `json:"data"`
 }
 
 func parseSnapshotJSON(data []byte) (*Snapshot, error) {
-	var wire cpSnapshotWire
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, fmt.Errorf("snapshot json: %w", err)
-	}
-	// Support bare snapshot fixtures (no ok/data wrapper) used in unit tests.
-	if !wire.OK && wire.Data.HighWaterVersion == "" {
-		var bare struct {
-			HighWaterVersion json.Number `json:"highWaterVersion"`
-			Scores           []struct {
-				PrincipalID string `json:"principal_id"`
-				EntityKind  string `json:"entity_kind"`
-				Score       int    `json:"score"`
-				Blacklisted bool   `json:"blacklisted"`
-				ScoreReason string `json:"score_reason"`
-			} `json:"scores"`
-			Keys []struct {
-				PrincipalID  string  `json:"principal_id"`
-				KeyID        string  `json:"key_id"`
-				PublicKeyRaw string  `json:"public_key_raw"`
-				ValidFrom    string  `json:"valid_from"`
-				ValidUntil   *string `json:"valid_until"`
-			} `json:"keys"`
-			Policy json.RawMessage `json:"policy"`
-		}
-		if err := json.Unmarshal(data, &bare); err != nil {
-			return nil, fmt.Errorf("snapshot json: %w", err)
-		}
-		wire.OK = true
-		wire.Data.HighWaterVersion = bare.HighWaterVersion
-		wire.Data.Scores = bare.Scores
-		wire.Data.Keys = bare.Keys
-		wire.Data.Policy = bare.Policy
+	wire, err := unmarshalSnapshotWire(data)
+	if err != nil {
+		return nil, err
 	}
 	if !wire.OK {
 		return nil, fmt.Errorf("snapshot: ok=false")
@@ -151,54 +126,11 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 		Scores:           make(map[string]ScoreEntry, len(wire.Data.Scores)),
 		Keys:             make(map[string]KeyEntry, len(wire.Data.Keys)),
 	}
-	for _, s := range wire.Data.Scores {
-		if s.PrincipalID == "" {
-			return nil, fmt.Errorf("snapshot: score entry missing principal_id")
-		}
-		if _, exists := snap.Scores[s.PrincipalID]; exists {
-			return nil, fmt.Errorf("snapshot: duplicate principal_id %q", s.PrincipalID)
-		}
-		snap.Scores[s.PrincipalID] = ScoreEntry{
-			PrincipalID: s.PrincipalID,
-			EntityKind:  s.EntityKind,
-			Score:       s.Score,
-			Blacklisted: s.Blacklisted,
-			ScoreReason: s.ScoreReason,
-		}
+	if err := loadWireScores(snap, wire.Data.Scores); err != nil {
+		return nil, err
 	}
-	for _, k := range wire.Data.Keys {
-		if k.KeyID == "" {
-			return nil, fmt.Errorf("snapshot: key entry missing key_id")
-		}
-		if _, exists := snap.Keys[k.KeyID]; exists {
-			return nil, fmt.Errorf("snapshot: duplicate key_id %q", k.KeyID)
-		}
-		raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
-		if err != nil {
-			raw, err = base64.RawStdEncoding.DecodeString(k.PublicKeyRaw)
-			if err != nil || len(raw) != 32 {
-				return nil, fmt.Errorf("key %s: %w", k.KeyID, err)
-			}
-		}
-		vf, err := parseTime(k.ValidFrom)
-		if err != nil {
-			return nil, fmt.Errorf("key %s valid_from: %w", k.KeyID, err)
-		}
-		var vu *time.Time
-		if k.ValidUntil != nil && *k.ValidUntil != "" {
-			t, err := parseTime(*k.ValidUntil)
-			if err != nil {
-				return nil, err
-			}
-			vu = &t
-		}
-		snap.Keys[k.KeyID] = KeyEntry{
-			PrincipalID:  k.PrincipalID,
-			KeyID:        k.KeyID,
-			PublicKeyRaw: raw,
-			ValidFrom:    vf,
-			ValidUntil:   vu,
-		}
+	if err := loadWireKeys(snap, wire.Data.Keys); err != nil {
+		return nil, err
 	}
 	if len(wire.Data.Policy) > 0 && string(wire.Data.Policy) != "null" {
 		pol, err := parsePolicyPayload(wire.Data.Policy)
@@ -211,6 +143,97 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 		return nil, fmt.Errorf("snapshot: %w", err)
 	}
 	return snap, nil
+}
+
+func unmarshalSnapshotWire(data []byte) (cpSnapshotWire, error) {
+	var wire cpSnapshotWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return wire, fmt.Errorf("snapshot json: %w", err)
+	}
+	// Support bare snapshot fixtures (no ok/data wrapper) used in unit tests.
+	if wire.OK || wire.Data.HighWaterVersion != "" {
+		return wire, nil
+	}
+	var bare struct {
+		HighWaterVersion json.Number     `json:"highWaterVersion"`
+		Scores           []cpScoreWire   `json:"scores"`
+		Keys             []cpKeyWire     `json:"keys"`
+		Policy           json.RawMessage `json:"policy"`
+	}
+	if err := json.Unmarshal(data, &bare); err != nil {
+		return wire, fmt.Errorf("snapshot json: %w", err)
+	}
+	wire.OK = true
+	wire.Data.HighWaterVersion = bare.HighWaterVersion
+	wire.Data.Scores = bare.Scores
+	wire.Data.Keys = bare.Keys
+	wire.Data.Policy = bare.Policy
+	return wire, nil
+}
+
+func loadWireScores(snap *Snapshot, scores []cpScoreWire) error {
+	for _, s := range scores {
+		if s.PrincipalID == "" {
+			return fmt.Errorf("snapshot: score entry missing principal_id")
+		}
+		if _, exists := snap.Scores[s.PrincipalID]; exists {
+			return fmt.Errorf("snapshot: duplicate principal_id %q", s.PrincipalID)
+		}
+		snap.Scores[s.PrincipalID] = ScoreEntry{
+			PrincipalID: s.PrincipalID,
+			EntityKind:  s.EntityKind,
+			Score:       s.Score,
+			Blacklisted: s.Blacklisted,
+			ScoreReason: s.ScoreReason,
+		}
+	}
+	return nil
+}
+
+func loadWireKeys(snap *Snapshot, keys []cpKeyWire) error {
+	for _, k := range keys {
+		entry, err := wireKeyToEntry(k)
+		if err != nil {
+			return err
+		}
+		if _, exists := snap.Keys[entry.KeyID]; exists {
+			return fmt.Errorf("snapshot: duplicate key_id %q", entry.KeyID)
+		}
+		snap.Keys[entry.KeyID] = entry
+	}
+	return nil
+}
+
+func wireKeyToEntry(k cpKeyWire) (KeyEntry, error) {
+	if k.KeyID == "" {
+		return KeyEntry{}, fmt.Errorf("snapshot: key entry missing key_id")
+	}
+	raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(k.PublicKeyRaw)
+		if err != nil || len(raw) != 32 {
+			return KeyEntry{}, fmt.Errorf("key %s: %w", k.KeyID, err)
+		}
+	}
+	vf, err := parseTime(k.ValidFrom)
+	if err != nil {
+		return KeyEntry{}, fmt.Errorf("key %s valid_from: %w", k.KeyID, err)
+	}
+	var vu *time.Time
+	if k.ValidUntil != nil && *k.ValidUntil != "" {
+		t, err := parseTime(*k.ValidUntil)
+		if err != nil {
+			return KeyEntry{}, err
+		}
+		vu = &t
+	}
+	return KeyEntry{
+		PrincipalID:  k.PrincipalID,
+		KeyID:        k.KeyID,
+		PublicKeyRaw: raw,
+		ValidFrom:    vf,
+		ValidUntil:   vu,
+	}, nil
 }
 
 func truncate(s string, n int) string {

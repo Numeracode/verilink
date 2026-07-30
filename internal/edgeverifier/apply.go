@@ -29,120 +29,139 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 	if syncVersion <= 0 {
 		return fmt.Errorf("invalid sync_version %d", syncVersion)
 	}
-	hw := store.HighWater()
-	if syncVersion <= hw {
+	if syncVersion <= store.HighWater() {
 		return nil // already applied
 	}
 
 	next := CloneSnapshot(store.Load())
+	if err := mutateSnapshot(next, eventType, payload); err != nil {
+		return err
+	}
+	next.HighWaterVersion = syncVersion
+	store.Swap(next)
+	store.NoteBytes()
+	return nil
+}
 
+func mutateSnapshot(next *Snapshot, eventType string, payload json.RawMessage) error {
 	switch eventType {
 	case "score.upsert":
-		var p struct {
-			PrincipalID string `json:"principal_id"`
-			EntityKind  string `json:"entity_kind"`
-			Score       int    `json:"score"`
-			Blacklisted bool   `json:"blacklisted"`
-			ScoreReason string `json:"score_reason"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("score.upsert: %w", err)
-		}
-		if p.PrincipalID == "" {
-			return fmt.Errorf("score.upsert: missing principal_id")
-		}
-		next.Scores[p.PrincipalID] = ScoreEntry{
-			PrincipalID: p.PrincipalID,
-			EntityKind:  p.EntityKind,
-			Score:       p.Score,
-			Blacklisted: p.Blacklisted,
-			ScoreReason: p.ScoreReason,
-		}
-
+		return applyScoreUpsert(next, payload)
 	case "score.delete":
-		var p struct {
-			PrincipalID string `json:"principal_id"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("score.delete: %w", err)
-		}
-		if p.PrincipalID == "" {
-			return fmt.Errorf("score.delete: missing principal_id")
-		}
-		delete(next.Scores, p.PrincipalID)
-
+		return applyScoreDelete(next, payload)
 	case "key.upsert":
-		var p struct {
-			PrincipalID  string  `json:"principal_id"`
-			KeyID        string  `json:"key_id"`
-			PublicKeyRaw string  `json:"public_key_raw"`
-			ValidFrom    string  `json:"valid_from"`
-			ValidUntil   *string `json:"valid_until"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("key.upsert: %w", err)
-		}
-		if p.KeyID == "" {
-			return fmt.Errorf("key.upsert: missing key_id")
-		}
-		if p.PrincipalID == "" {
-			return fmt.Errorf("key.upsert: missing principal_id")
-		}
-		if p.PublicKeyRaw == "" {
-			return fmt.Errorf("key.upsert: missing public_key_raw")
-		}
-		raw, err := DecodePublicKeyRaw(p.PublicKeyRaw)
-		if err != nil {
-			return err
-		}
-		vf, err := parseTime(p.ValidFrom)
-		if err != nil {
-			return fmt.Errorf("key.upsert valid_from: %w", err)
-		}
-		var vu *time.Time
-		if p.ValidUntil != nil && *p.ValidUntil != "" {
-			t, err := parseTime(*p.ValidUntil)
-			if err != nil {
-				return fmt.Errorf("key.upsert valid_until: %w", err)
-			}
-			vu = &t
-		}
-		next.Keys[p.KeyID] = KeyEntry{
-			PrincipalID:  p.PrincipalID,
-			KeyID:        p.KeyID,
-			PublicKeyRaw: raw,
-			ValidFrom:    vf,
-			ValidUntil:   vu,
-		}
-
+		return applyKeyUpsert(next, payload)
 	case "key.revoke":
-		var p struct {
-			KeyID string `json:"key_id"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("key.revoke: %w", err)
-		}
-		if p.KeyID == "" {
-			return fmt.Errorf("key.revoke: missing key_id")
-		}
-		delete(next.Keys, p.KeyID)
-
+		return applyKeyRevoke(next, payload)
 	case "policy.replace":
 		pol, err := parsePolicyPayload(payload)
 		if err != nil {
 			return err
 		}
 		next.Policy = pol
-
+		return nil
 	case "cursor":
-		// non-durable: only advance HW below
+		return nil // non-durable: only advance HW in ApplyEvent
 	default:
-		// unknown types ignored (forward-compatible)
+		return nil // unknown types ignored (forward-compatible)
 	}
+}
 
-	next.HighWaterVersion = syncVersion
-	store.Swap(next)
-	store.NoteBytes()
+func applyScoreUpsert(next *Snapshot, payload json.RawMessage) error {
+	var p struct {
+		PrincipalID string `json:"principal_id"`
+		EntityKind  string `json:"entity_kind"`
+		Score       int    `json:"score"`
+		Blacklisted bool   `json:"blacklisted"`
+		ScoreReason string `json:"score_reason"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("score.upsert: %w", err)
+	}
+	if p.PrincipalID == "" {
+		return fmt.Errorf("score.upsert: missing principal_id")
+	}
+	next.Scores[p.PrincipalID] = ScoreEntry{
+		PrincipalID: p.PrincipalID,
+		EntityKind:  p.EntityKind,
+		Score:       p.Score,
+		Blacklisted: p.Blacklisted,
+		ScoreReason: p.ScoreReason,
+	}
+	return nil
+}
+
+func applyScoreDelete(next *Snapshot, payload json.RawMessage) error {
+	var p struct {
+		PrincipalID string `json:"principal_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("score.delete: %w", err)
+	}
+	if p.PrincipalID == "" {
+		return fmt.Errorf("score.delete: missing principal_id")
+	}
+	delete(next.Scores, p.PrincipalID)
+	return nil
+}
+
+func applyKeyUpsert(next *Snapshot, payload json.RawMessage) error {
+	var p struct {
+		PrincipalID  string  `json:"principal_id"`
+		KeyID        string  `json:"key_id"`
+		PublicKeyRaw string  `json:"public_key_raw"`
+		ValidFrom    string  `json:"valid_from"`
+		ValidUntil   *string `json:"valid_until"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("key.upsert: %w", err)
+	}
+	if p.KeyID == "" {
+		return fmt.Errorf("key.upsert: missing key_id")
+	}
+	if p.PrincipalID == "" {
+		return fmt.Errorf("key.upsert: missing principal_id")
+	}
+	if p.PublicKeyRaw == "" {
+		return fmt.Errorf("key.upsert: missing public_key_raw")
+	}
+	raw, err := DecodePublicKeyRaw(p.PublicKeyRaw)
+	if err != nil {
+		return err
+	}
+	vf, err := parseTime(p.ValidFrom)
+	if err != nil {
+		return fmt.Errorf("key.upsert valid_from: %w", err)
+	}
+	var vu *time.Time
+	if p.ValidUntil != nil && *p.ValidUntil != "" {
+		t, err := parseTime(*p.ValidUntil)
+		if err != nil {
+			return fmt.Errorf("key.upsert valid_until: %w", err)
+		}
+		vu = &t
+	}
+	next.Keys[p.KeyID] = KeyEntry{
+		PrincipalID:  p.PrincipalID,
+		KeyID:        p.KeyID,
+		PublicKeyRaw: raw,
+		ValidFrom:    vf,
+		ValidUntil:   vu,
+	}
+	return nil
+}
+
+func applyKeyRevoke(next *Snapshot, payload json.RawMessage) error {
+	var p struct {
+		KeyID string `json:"key_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("key.revoke: %w", err)
+	}
+	if p.KeyID == "" {
+		return fmt.Errorf("key.revoke: missing key_id")
+	}
+	delete(next.Keys, p.KeyID)
 	return nil
 }
 
