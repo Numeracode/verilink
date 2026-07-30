@@ -26,16 +26,15 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 	if store == nil {
 		return fmt.Errorf("nil store")
 	}
-	cur := store.Load()
-	hw := int64(0)
-	if cur != nil {
-		hw = cur.HighWaterVersion
+	if syncVersion <= 0 {
+		return fmt.Errorf("invalid sync_version %d", syncVersion)
 	}
-	if syncVersion > 0 && syncVersion <= hw {
+	hw := store.HighWater()
+	if syncVersion <= hw {
 		return nil // already applied
 	}
 
-	next := CloneSnapshot(cur)
+	next := CloneSnapshot(store.Load())
 
 	switch eventType {
 	case "score.upsert":
@@ -80,6 +79,15 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("key.upsert: %w", err)
 		}
+		if p.KeyID == "" {
+			return fmt.Errorf("key.upsert: missing key_id")
+		}
+		if p.PrincipalID == "" {
+			return fmt.Errorf("key.upsert: missing principal_id")
+		}
+		if p.PublicKeyRaw == "" {
+			return fmt.Errorf("key.upsert: missing public_key_raw")
+		}
 		raw, err := DecodePublicKeyRaw(p.PublicKeyRaw)
 		if err != nil {
 			return err
@@ -111,6 +119,9 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("key.revoke: %w", err)
 		}
+		if p.KeyID == "" {
+			return fmt.Errorf("key.revoke: missing key_id")
+		}
 		delete(next.Keys, p.KeyID)
 
 	case "policy.replace":
@@ -126,31 +137,18 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 		// unknown types ignored (forward-compatible)
 	}
 
-	if syncVersion > next.HighWaterVersion {
-		next.HighWaterVersion = syncVersion
-	}
+	next.HighWaterVersion = syncVersion
 	store.Swap(next)
 	store.NoteBytes()
 	return nil
 }
 
-// AdvanceCursor advances high-water without mutating scores/keys (non-durable cursor event).
+// AdvanceCursor advances high-water without cloning score/key maps.
 func AdvanceCursor(store *Store, highWater int64) {
 	if store == nil {
 		return
 	}
-	cur := store.Load()
-	hw := int64(0)
-	if cur != nil {
-		hw = cur.HighWaterVersion
-	}
-	if highWater <= hw {
-		store.NoteBytes()
-		return
-	}
-	next := CloneSnapshot(cur)
-	next.HighWaterVersion = highWater
-	store.Swap(next)
+	store.advanceHighWater(highWater)
 	store.NoteBytes()
 }
 

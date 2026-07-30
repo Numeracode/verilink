@@ -32,13 +32,16 @@ func TestSnapshotAtomicSwapMissUnknown(t *testing.T) {
 
 func TestApplyEventIdempotent(t *testing.T) {
 	s := NewStore()
-	payload, _ := json.Marshal(map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"principal_id": "p1",
 		"entity_kind":  "agent",
 		"score":        70,
 		"blacklisted":  false,
 		"score_reason": "ok",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := ApplyEvent(s, 5, "score.upsert", payload); err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +51,16 @@ func TestApplyEventIdempotent(t *testing.T) {
 	if s.HighWater() != 5 {
 		t.Fatalf("hw=%d", s.HighWater())
 	}
-	// lower version ignored
-	payload2, _ := json.Marshal(map[string]any{
+	payload2, err := json.Marshal(map[string]any{
 		"principal_id": "p1",
 		"score":        10,
 		"entity_kind":  "agent",
 		"blacklisted":  false,
 		"score_reason": "x",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := ApplyEvent(s, 4, "score.upsert", payload2); err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +70,20 @@ func TestApplyEventIdempotent(t *testing.T) {
 	}
 }
 
-func TestAdvanceCursor(t *testing.T) {
+func TestAdvanceCursorNoClone(t *testing.T) {
 	s := NewStore()
-	ApplySnapshot(s, &Snapshot{HighWaterVersion: 1, Scores: map[string]ScoreEntry{}, Keys: map[string]KeyEntry{}})
+	ApplySnapshot(s, &Snapshot{
+		HighWaterVersion: 1,
+		Scores:           map[string]ScoreEntry{"p1": {PrincipalID: "p1", Score: 1}},
+		Keys:             map[string]KeyEntry{},
+	})
+	before := s.Load()
 	AdvanceCursor(s, 10)
 	if s.HighWater() != 10 {
 		t.Fatalf("hw=%d", s.HighWater())
+	}
+	if s.Load() != before {
+		t.Fatal("AdvanceCursor should not replace snapshot pointer")
 	}
 }
 
@@ -126,6 +139,9 @@ func TestParseRetryMs(t *testing.T) {
 	if _, ok := parseRetryMs("abc"); ok {
 		t.Fatal("non-numeric")
 	}
+	if v, ok := parseRetryMs("999999"); !ok || v != maxBackoffMs {
+		t.Fatalf("expected clamp to %d, got %d ok=%v", maxBackoffMs, v, ok)
+	}
 }
 
 func TestEvaluateModeStale(t *testing.T) {
@@ -136,7 +152,6 @@ func TestEvaluateModeStale(t *testing.T) {
 		Keys:             map[string]KeyEntry{},
 		Policy:           &Policy{MaxSnapshotAgeSeconds: 60, FailOpenExpired: false},
 	})
-	// force old bytes
 	old := time.Now().Add(-2 * time.Minute)
 	s.lastBytes.Store(&old)
 	if mode := EvaluateMode(s, true, time.Now()); mode != ModeStale {
@@ -160,5 +175,38 @@ func TestKeyValidityWindow(t *testing.T) {
 	})
 	if _, ok := s.LookupKey("k", time.Now()); ok {
 		t.Fatal("key should be invalid before valid_from")
+	}
+}
+
+func TestRequireSignaturesNilStore(t *testing.T) {
+	if RequireSignaturesFromPolicy(nil, false) {
+		t.Fatal("nil store should not require signatures")
+	}
+	if !RequireSignaturesFromPolicy(nil, true) {
+		t.Fatal("flag should still require")
+	}
+}
+
+func TestParseSnapshotInvalidHW(t *testing.T) {
+	_, err := parseSnapshotJSON([]byte(`{"ok":true,"data":{"highWaterVersion":"nope","scores":[],"keys":[]}}`))
+	if err == nil {
+		t.Fatal("expected error for invalid highWaterVersion")
+	}
+}
+
+func TestApplyEventRejectsZeroVersion(t *testing.T) {
+	s := NewStore()
+	payload, err := json.Marshal(map[string]any{
+		"principal_id": "p1",
+		"score":        1,
+		"entity_kind":  "agent",
+		"blacklisted":  false,
+		"score_reason": "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyEvent(s, 0, "score.upsert", payload); err == nil {
+		t.Fatal("expected reject sync_version 0")
 	}
 }

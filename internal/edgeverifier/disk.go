@@ -49,13 +49,7 @@ func SaveSnapshot(path string, snap *Snapshot) error {
 		Policy:           snap.Policy,
 	}
 	for _, s := range snap.Scores {
-		env.Scores = append(env.Scores, diskScore{
-			PrincipalID: s.PrincipalID,
-			EntityKind:  s.EntityKind,
-			Score:       s.Score,
-			Blacklisted: s.Blacklisted,
-			ScoreReason: s.ScoreReason,
-		})
+		env.Scores = append(env.Scores, diskScore(s))
 	}
 	for _, k := range snap.Keys {
 		dk := diskKey{
@@ -126,13 +120,7 @@ func LoadSnapshot(path string) (*Snapshot, error) {
 		Policy:           env.Policy,
 	}
 	for _, s := range env.Scores {
-		snap.Scores[s.PrincipalID] = ScoreEntry{
-			PrincipalID: s.PrincipalID,
-			EntityKind:  s.EntityKind,
-			Score:       s.Score,
-			Blacklisted: s.Blacklisted,
-			ScoreReason: s.ScoreReason,
-		}
+		snap.Scores[s.PrincipalID] = ScoreEntry(s)
 	}
 	for _, k := range env.Keys {
 		raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)

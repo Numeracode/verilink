@@ -24,6 +24,7 @@ type SyncRunner struct {
 	Store        *Store
 	SnapshotPath string
 	Logger       *log.Logger
+	OnReachable  func(bool)
 
 	persistEveryEvents  int
 	persistEvery        time.Duration
@@ -39,6 +40,13 @@ func WithPersistCadence(everyEvents int, every time.Duration) SyncRunnerOption {
 	return func(r *SyncRunner) {
 		r.persistEveryEvents = everyEvents
 		r.persistEvery = every
+	}
+}
+
+// WithOnReachable sets a callback invoked when SSE session reachability changes.
+func WithOnReachable(fn func(bool)) SyncRunnerOption {
+	return func(r *SyncRunner) {
+		r.OnReachable = fn
 	}
 }
 
@@ -58,13 +66,19 @@ func NewSyncRunner(client *ControlPlaneClient, store *Store, snapshotPath string
 	return r
 }
 
+func (r *SyncRunner) setReachable(ok bool) {
+	if r.OnReachable != nil {
+		r.OnReachable(ok)
+	}
+}
+
 // Bootstrap loads disk snapshot if present, else fetches from control plane.
 func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 	if r.SnapshotPath != "" {
 		if snap, err := LoadSnapshot(r.SnapshotPath); err == nil {
 			ApplySnapshot(r.Store, snap)
 			r.lastPersist = time.Now()
-			r.logf("loaded disk snapshot hw=%d", snap.HighWaterVersion)
+			r.logf("loaded disk snapshot hw=%d", r.Store.HighWater())
 			return nil
 		}
 	}
@@ -73,10 +87,10 @@ func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("fetch snapshot: %w", err)
 	}
 	ApplySnapshot(r.Store, snap)
-	if err := r.persist(snap); err != nil {
+	if err := r.persist(r.Store.SnapshotForPersist()); err != nil {
 		r.logf("persist after bootstrap: %v", err)
 	}
-	r.logf("fetched snapshot hw=%d", snap.HighWaterVersion)
+	r.logf("fetched snapshot hw=%d", r.Store.HighWater())
 	return nil
 }
 
@@ -90,11 +104,13 @@ func (r *SyncRunner) Run(ctx context.Context) error {
 	backoffMs := defaultRetryMs
 	for {
 		if ctx.Err() != nil {
+			r.setReachable(false)
 			return ctx.Err()
 		}
 		retryMs, err := r.runSession(ctx)
+		r.setReachable(false)
 		if retryMs > 0 {
-			backoffMs = retryMs
+			backoffMs = minInt(retryMs, maxBackoffMs)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -135,7 +151,7 @@ func (r *SyncRunner) runSession(ctx context.Context) (retryMs int, err error) {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// stream
+		r.setReachable(true)
 	case http.StatusTooManyRequests, http.StatusGone:
 		r.logf("sync recovery status=%d — refetch snapshot", resp.StatusCode)
 		if err := r.recoverSnapshot(ctx); err != nil {
@@ -158,7 +174,7 @@ func (r *SyncRunner) recoverSnapshot(ctx context.Context) error {
 		return err
 	}
 	ApplySnapshot(r.Store, snap)
-	return r.persist(snap)
+	return r.persist(r.Store.SnapshotForPersist())
 }
 
 func (r *SyncRunner) readStream(ctx context.Context, body io.Reader) (retryMs int, err error) {
@@ -183,12 +199,18 @@ func (r *SyncRunner) readStream(ctx context.Context, body io.Reader) (retryMs in
 			return fmt.Errorf("shutdown")
 		case "cursor":
 			hw, perr := parseID(idStr)
-			if perr == nil {
-				AdvanceCursor(r.Store, hw)
+			if perr != nil {
+				r.logf("ignore cursor with bad id %q: %v", idStr, perr)
+				return nil
 			}
+			AdvanceCursor(r.Store, hw)
 			return nil
 		default:
-			hw, _ := parseID(idStr)
+			hw, perr := parseID(idStr)
+			if perr != nil || hw <= 0 {
+				r.logf("ignore %s with bad id %q: %v", eventName, idStr, perr)
+				return nil
+			}
 			if err := ApplyEvent(r.Store, hw, eventName, json.RawMessage(data)); err != nil {
 				r.logf("apply %s: %v", eventName, err)
 				return nil
@@ -253,11 +275,7 @@ func (r *SyncRunner) maybePersist() {
 	if !dueEvents && !dueTime {
 		return
 	}
-	snap := r.Store.Load()
-	if snap == nil {
-		return
-	}
-	if err := r.persist(snap); err != nil {
+	if err := r.persist(r.Store.SnapshotForPersist()); err != nil {
 		r.logf("persist: %v", err)
 	}
 }
@@ -288,6 +306,9 @@ func parseRetryMs(s string) (int, bool) {
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
 		return 0, false
+	}
+	if n > maxBackoffMs {
+		n = maxBackoffMs
 	}
 	return n, true
 }

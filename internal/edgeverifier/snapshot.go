@@ -47,8 +47,10 @@ type Snapshot struct {
 }
 
 // Store holds the live snapshot behind an atomic pointer and tracks SSE freshness.
+// High-water is a separate atomic so cursor events do not clone score/key maps.
 type Store struct {
 	ptr       atomic.Pointer[Snapshot]
+	hw        atomic.Int64
 	lastBytes atomic.Pointer[time.Time]
 }
 
@@ -65,12 +67,13 @@ func (s *Store) Load() *Snapshot {
 	return s.ptr.Load()
 }
 
-// Swap replaces the live snapshot atomically.
+// Swap replaces the live snapshot atomically and sets high-water from snap.
 func (s *Store) Swap(next *Snapshot) {
 	if s == nil || next == nil {
 		return
 	}
 	s.ptr.Store(next)
+	s.hw.Store(next.HighWaterVersion)
 }
 
 // NoteBytes records that authenticated SSE bytes were received (freshness).
@@ -105,11 +108,36 @@ func (s *Store) BytesAge() time.Duration {
 
 // HighWater returns the live high-water version, or 0.
 func (s *Store) HighWater() int64 {
-	snap := s.Load()
-	if snap == nil {
+	if s == nil {
 		return 0
 	}
-	return snap.HighWaterVersion
+	return s.hw.Load()
+}
+
+// advanceHighWater monotonically raises the live high-water cursor.
+func (s *Store) advanceHighWater(v int64) {
+	if s == nil || v <= 0 {
+		return
+	}
+	for {
+		cur := s.hw.Load()
+		if v <= cur {
+			return
+		}
+		if s.hw.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+// SnapshotForPersist returns a clone with HighWaterVersion set from the live cursor.
+func (s *Store) SnapshotForPersist() *Snapshot {
+	if s == nil {
+		return nil
+	}
+	snap := CloneSnapshot(s.Load())
+	snap.HighWaterVersion = s.HighWater()
+	return snap
 }
 
 // LookupScore returns the score for a principal, or (0, false) on miss.

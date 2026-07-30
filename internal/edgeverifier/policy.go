@@ -45,6 +45,9 @@ func RequireSignaturesFromPolicy(store *Store, flagRequire bool) bool {
 	if flagRequire {
 		return true
 	}
+	if store == nil {
+		return false
+	}
 	pol := store.ActivePolicy()
 	if pol == nil {
 		return false
@@ -54,6 +57,9 @@ func RequireSignaturesFromPolicy(store *Store, flagRequire bool) bool {
 
 // AllowByScore applies threshold / blacklist policy. unknown → score 0.
 func AllowByScore(store *Store, principalID string) (allow bool, score int, reason string) {
+	if store == nil {
+		return false, 0, "unknown"
+	}
 	pol := store.ActivePolicy()
 	threshold := 50
 	below := "deny"

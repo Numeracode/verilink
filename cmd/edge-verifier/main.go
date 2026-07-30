@@ -69,8 +69,12 @@ func main() {
 	nonceCache := requestsigin.NewNonceCache(5 * time.Minute)
 	defer nonceCache.Stop()
 
-	var snapStore *edgeverifier.Store
-	var syncCancel context.CancelFunc
+	var (
+		snapStore  *edgeverifier.Store
+		syncCancel context.CancelFunc
+		syncCtx    context.Context
+		syncRunner *edgeverifier.SyncRunner
+	)
 	if syncEnabled {
 		if controlPlaneURL == "" || apiKey == "" {
 			log.Fatal("sync enabled requires -control-plane-url / VERILINK_CONTROL_PLANE_URL and -api-key / VERILINK_API_KEY")
@@ -83,21 +87,14 @@ func main() {
 				Timeout: 0, // SSE is long-lived; per-request timeouts set on snapshot via context
 			},
 		}
-		// Snapshot fetch needs a timeout — use a client with timeout for bootstrap via context.
-		runner := edgeverifier.NewSyncRunner(client, snapStore, snapshotPath)
-		syncCtx, cancel := context.WithCancel(context.Background())
-		syncCancel = cancel
+		syncRunner = edgeverifier.NewSyncRunner(client, snapStore, snapshotPath)
+		syncCtx, syncCancel = context.WithCancel(context.Background())
 		bootCtx, bootCancel := context.WithTimeout(syncCtx, 30*time.Second)
-		if err := runner.Bootstrap(bootCtx); err != nil {
+		if err := syncRunner.Bootstrap(bootCtx); err != nil {
 			bootCancel()
 			log.Fatalf("sync bootstrap: %v", err)
 		}
 		bootCancel()
-		go func() {
-			if err := runner.Run(syncCtx); err != nil && syncCtx.Err() == nil {
-				log.Printf("sync runner stopped: %v", err)
-			}
-		}()
 		log.Printf("Control-plane sync enabled against %s", controlPlaneURL)
 	}
 
@@ -124,6 +121,15 @@ func main() {
 	)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if syncRunner != nil {
+		syncRunner.OnReachable = proxy.SetSyncReachable
+		go func() {
+			if err := syncRunner.Run(syncCtx); err != nil && syncCtx.Err() == nil {
+				log.Printf("sync runner stopped: %v", err)
+			}
+		}()
 	}
 
 	log.Println("Verilink Edge Verifier running on :8080")

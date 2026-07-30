@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// MaxSnapshotBytes caps decompressed snapshot JSON size (bootstrap/recovery).
+const MaxSnapshotBytes = 64 << 20 // 64 MiB
+
 // ControlPlaneClient talks to the VeriLink control-plane sync APIs.
 type ControlPlaneClient struct {
 	BaseURL    string
@@ -46,7 +49,12 @@ func (c *ControlPlaneClient) FetchSnapshot(ctx context.Context) (*Snapshot, erro
 	}
 	defer resp.Body.Close()
 
-	body := resp.Body
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("snapshot: status %d: %s", resp.StatusCode, truncate(string(errBody), 200))
+	}
+
+	body := io.Reader(resp.Body)
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		zr, err := gzip.NewReader(resp.Body)
 		if err != nil {
@@ -56,12 +64,13 @@ func (c *ControlPlaneClient) FetchSnapshot(ctx context.Context) (*Snapshot, erro
 		body = zr
 	}
 
-	data, err := io.ReadAll(body)
+	limited := &io.LimitedReader{R: body, N: MaxSnapshotBytes + 1}
+	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("snapshot: status %d: %s", resp.StatusCode, truncate(string(data), 200))
+	if int64(len(data)) > MaxSnapshotBytes {
+		return nil, fmt.Errorf("snapshot: response exceeds %d bytes", MaxSnapshotBytes)
 	}
 
 	return parseSnapshotJSON(data)
@@ -92,29 +101,50 @@ type cpSnapshotWire struct {
 func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 	var wire cpSnapshotWire
 	if err := json.Unmarshal(data, &wire); err != nil {
-		// allow bare snapshot object (tests / fixtures)
-		var bare struct {
-			HighWaterVersion json.Number     `json:"highWaterVersion"`
-			Scores           json.RawMessage `json:"scores"`
-			Keys             json.RawMessage `json:"keys"`
-			Policy           json.RawMessage `json:"policy"`
-		}
-		if err2 := json.Unmarshal(data, &bare); err2 != nil {
-			return nil, err
-		}
-		wrapped, _ := json.Marshal(map[string]any{
-			"ok":   true,
-			"data": bare,
-		})
-		return parseSnapshotJSON(wrapped)
+		return nil, fmt.Errorf("snapshot json: %w", err)
 	}
+	// Support bare snapshot fixtures (no ok/data wrapper) used in unit tests.
 	if !wire.OK && wire.Data.HighWaterVersion == "" {
-		return nil, fmt.Errorf("snapshot: unexpected response shape")
+		var bare struct {
+			HighWaterVersion json.Number `json:"highWaterVersion"`
+			Scores           []struct {
+				PrincipalID string `json:"principal_id"`
+				EntityKind  string `json:"entity_kind"`
+				Score       int    `json:"score"`
+				Blacklisted bool   `json:"blacklisted"`
+				ScoreReason string `json:"score_reason"`
+			} `json:"scores"`
+			Keys []struct {
+				PrincipalID  string  `json:"principal_id"`
+				KeyID        string  `json:"key_id"`
+				PublicKeyRaw string  `json:"public_key_raw"`
+				ValidFrom    string  `json:"valid_from"`
+				ValidUntil   *string `json:"valid_until"`
+			} `json:"keys"`
+			Policy json.RawMessage `json:"policy"`
+		}
+		if err := json.Unmarshal(data, &bare); err != nil {
+			return nil, fmt.Errorf("snapshot json: %w", err)
+		}
+		wire.OK = true
+		wire.Data.HighWaterVersion = bare.HighWaterVersion
+		wire.Data.Scores = bare.Scores
+		wire.Data.Keys = bare.Keys
+		wire.Data.Policy = bare.Policy
+	}
+	if !wire.OK {
+		return nil, fmt.Errorf("snapshot: ok=false")
+	}
+	if wire.Data.HighWaterVersion == "" {
+		return nil, fmt.Errorf("snapshot: missing highWaterVersion")
 	}
 
 	hw, err := wire.Data.HighWaterVersion.Int64()
 	if err != nil {
-		hw = 0
+		return nil, fmt.Errorf("snapshot: invalid highWaterVersion %q: %w", wire.Data.HighWaterVersion, err)
+	}
+	if hw < 0 {
+		return nil, fmt.Errorf("snapshot: negative highWaterVersion %d", hw)
 	}
 	snap := &Snapshot{
 		HighWaterVersion: hw,
@@ -133,7 +163,6 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 	for _, k := range wire.Data.Keys {
 		raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
 		if err != nil {
-			// try std then rawurl already in DecodePublicKeyRaw; also try padded std via RawStd
 			raw, err = base64.RawStdEncoding.DecodeString(k.PublicKeyRaw)
 			if err != nil || len(raw) != 32 {
 				return nil, fmt.Errorf("key %s: %w", k.KeyID, err)
