@@ -220,6 +220,89 @@ describe('SSE sync', () => {
     });
     assert.equal(resp.status, 403);
   });
+
+  it('tenant admin:read lag is scoped to own tenant only', async () => {
+    const other = await seedTenant(pool, `tenant-sse-other-${Date.now()}`);
+    const otherAdmin = await seedApiKey(pool, other.id, ['admin:read']);
+
+    const edgeA = (
+      await pool.query(
+        `INSERT INTO edge_nodes (tenant_id, name, status) VALUES ($1, 'a', 'online') RETURNING id`,
+        [tenantId]
+      )
+    ).rows[0].id as string;
+    const edgeB = (
+      await pool.query(
+        `INSERT INTO edge_nodes (tenant_id, name, status) VALUES ($1, 'b', 'online') RETURNING id`,
+        [other.id]
+      )
+    ).rows[0].id as string;
+    await pool.query(
+      `INSERT INTO sync_cursors (tenant_id, edge_node_id, last_cursor, last_sync_at)
+       VALUES ($1, $2, 0, now()), ($3, $4, 0, now())`,
+      [tenantId, edgeA, other.id, edgeB]
+    );
+
+    const lagResp = await fetch(`${harness.url}/v1/admin/sync/lag`, {
+      headers: authHeaders(adminKey),
+    });
+    assert.equal(lagResp.status, 200);
+    const lagBody = (await lagResp.json()) as {
+      ok: boolean;
+      data: { edges: Array<{ tenant_id: string }> };
+    };
+    assert.equal(lagBody.ok, true);
+    assert.ok(lagBody.data.edges.every((e) => e.tenant_id === tenantId));
+    assert.ok(!lagBody.data.edges.some((e) => e.tenant_id === other.id));
+
+    const otherLag = await fetch(`${harness.url}/v1/admin/sync/lag`, {
+      headers: authHeaders(otherAdmin),
+    });
+    assert.equal(otherLag.status, 200);
+    const otherBody = (await otherLag.json()) as {
+      data: { edges: Array<{ tenant_id: string }> };
+    };
+    assert.ok(otherBody.data.edges.every((e) => e.tenant_id === other.id));
+  });
+
+  it('orders lag rows by numeric lag descending', async () => {
+    const edgeLow = (
+      await pool.query(
+        `INSERT INTO edge_nodes (tenant_id, name, status) VALUES ($1, 'lag-low', 'online') RETURNING id`,
+        [tenantId]
+      )
+    ).rows[0].id as string;
+    const edgeHigh = (
+      await pool.query(
+        `INSERT INTO edge_nodes (tenant_id, name, status) VALUES ($1, 'lag-high', 'online') RETURNING id`,
+        [tenantId]
+      )
+    ).rows[0].id as string;
+    // high_water will be 100; cursors 91 and 0 → lags 9 and 100
+    await pool.query(`DELETE FROM sync_events`);
+    await pool.query(
+      `INSERT INTO sync_events (sync_version, event_type, payload)
+       SELECT g, 'key.upsert', '{}'::jsonb FROM generate_series(1, 100) g`
+    );
+    await pool.query(
+      `INSERT INTO sync_cursors (tenant_id, edge_node_id, last_cursor, last_sync_at)
+       VALUES ($1, $2, 91, now()), ($1, $3, 0, now())`,
+      [tenantId, edgeLow, edgeHigh]
+    );
+
+    const lagResp = await fetch(`${harness.url}/v1/admin/sync/lag`, {
+      headers: authHeaders(adminKey),
+    });
+    assert.equal(lagResp.status, 200);
+    const lagBody = (await lagResp.json()) as {
+      data: { edges: Array<{ edge_name: string; lag: string }> };
+    };
+    assert.ok(lagBody.data.edges.length >= 2);
+    assert.equal(lagBody.data.edges[0].edge_name, 'lag-high');
+    assert.equal(lagBody.data.edges[0].lag, '100');
+    assert.equal(lagBody.data.edges[1].edge_name, 'lag-low');
+    assert.equal(lagBody.data.edges[1].lag, '9');
+  });
 });
 
 describe('SSE sync score events (live trust-engine)', { skip: skipLive }, () => {

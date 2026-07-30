@@ -4,26 +4,24 @@ import { logger } from '../../shared/logger.js';
 
 /**
  * Resolve edge_node_id from authenticated API key — never from client input.
- * Creates an edge_nodes row for the key if missing.
+ * Creates an edge_nodes row for the key if missing (unique per tenant+api_key).
  */
 export async function resolveEdgeNodeForApiKey(
   tenantId: string,
   apiKeyId: string
 ): Promise<string> {
-  const existing = await pool.query(
-    `SELECT id FROM edge_nodes WHERE tenant_id = $1 AND api_key_id = $2 LIMIT 1`,
-    [tenantId, apiKeyId]
-  );
-  if (existing.rows[0]) {
-    return existing.rows[0].id as string;
-  }
-  const inserted = await pool.query(
+  const name = `edge-${apiKeyId.slice(0, 8)}`;
+  const upserted = await pool.query(
     `INSERT INTO edge_nodes (tenant_id, name, api_key_id, status, last_seen_at)
      VALUES ($1, $2, $3, 'online', now())
+     ON CONFLICT (tenant_id, api_key_id) WHERE api_key_id IS NOT NULL
+     DO UPDATE SET
+       last_seen_at = now(),
+       status = 'online'
      RETURNING id`,
-    [tenantId, `edge-${apiKeyId.slice(0, 8)}`, apiKeyId]
+    [tenantId, name, apiKeyId]
   );
-  return inserted.rows[0].id as string;
+  return upserted.rows[0].id as string;
 }
 
 /** Monotonic upsert — EXCLUDED.last_cursor cannot regress stored last_cursor. */
@@ -56,19 +54,29 @@ export interface SyncLagRow {
   last_sync_at: Date | null;
 }
 
-export async function listSyncLag(): Promise<SyncLagRow[]> {
+/**
+ * List per-edge sync lag. When tenantId is set, results are scoped to that tenant.
+ * Platform staff callers omit tenantId for a global view.
+ */
+export async function listSyncLag(tenantId?: string): Promise<SyncLagRow[]> {
   const { rows } = await pool.query(
-    `SELECT
+    `WITH hw AS (
+       SELECT COALESCE(MAX(sync_version), 0) AS high_water_version FROM sync_events
+     )
+     SELECT
        sc.tenant_id,
        sc.edge_node_id,
        en.name AS edge_name,
        sc.last_cursor::text AS last_cursor,
-       COALESCE((SELECT MAX(sync_version) FROM sync_events), 0)::text AS high_water_version,
-       (COALESCE((SELECT MAX(sync_version) FROM sync_events), 0) - sc.last_cursor)::text AS lag,
+       hw.high_water_version::text AS high_water_version,
+       (hw.high_water_version - sc.last_cursor)::text AS lag,
        sc.last_sync_at
      FROM sync_cursors sc
      JOIN edge_nodes en ON en.id = sc.edge_node_id AND en.tenant_id = sc.tenant_id
-     ORDER BY lag DESC, sc.tenant_id, sc.edge_node_id`
+     CROSS JOIN hw
+     WHERE ($1::uuid IS NULL OR sc.tenant_id = $1)
+     ORDER BY (hw.high_water_version - sc.last_cursor) DESC, sc.tenant_id, sc.edge_node_id`,
+    [tenantId ?? null]
   );
   return rows;
 }
