@@ -213,13 +213,16 @@ func CloneSnapshot(src *Snapshot) *Snapshot {
 	return out
 }
 
-// DecodePublicKeyRaw accepts standard or raw URL base64 for a 32-byte key.
+// DecodePublicKeyRaw accepts standard, raw-std, or raw-URL base64 for a 32-byte key.
 func DecodePublicKeyRaw(b64 string) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		raw, err = base64.RawURLEncoding.DecodeString(b64)
+		raw, err = base64.RawStdEncoding.DecodeString(b64)
 		if err != nil {
-			return nil, fmt.Errorf("decode public key: %w", err)
+			raw, err = base64.RawURLEncoding.DecodeString(b64)
+			if err != nil {
+				return nil, fmt.Errorf("decode public key: %w", err)
+			}
 		}
 	}
 	if len(raw) != ed25519.PublicKeySize {

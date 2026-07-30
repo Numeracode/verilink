@@ -3,7 +3,6 @@ package edgeverifier
 import (
 	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -204,10 +203,7 @@ func wireKeyToEntry(k cpKeyWire) (KeyEntry, error) {
 	}
 	raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
 	if err != nil {
-		raw, err = base64.RawStdEncoding.DecodeString(k.PublicKeyRaw)
-		if err != nil || len(raw) != 32 {
-			return KeyEntry{}, fmt.Errorf("key %s: %w", k.KeyID, err)
-		}
+		return KeyEntry{}, fmt.Errorf("key %s: %w", k.KeyID, err)
 	}
 	vf, err := parseTime(k.ValidFrom)
 	if err != nil {

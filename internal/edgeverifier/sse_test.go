@@ -79,11 +79,11 @@ func TestSSEShutdownAndCursor(t *testing.T) {
 }
 
 func TestSSE429RecoversViaSnapshot(t *testing.T) {
-	var n int
+	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/sync/snapshot":
-			n++
+			n.Add(1)
 			hw := 7
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
@@ -140,5 +140,5 @@ func TestSSE429RecoversViaSnapshot(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("429 recovery failed hw=%d n=%d", store.HighWater(), n)
+	t.Fatalf("429 recovery failed hw=%d n=%d", store.HighWater(), n.Load())
 }

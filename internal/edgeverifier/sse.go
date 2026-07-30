@@ -87,7 +87,9 @@ func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 			return nil
 		}
 	}
-	snap, err := r.Client.FetchSnapshot(ctx)
+	fetchCtx, cancel := context.WithTimeout(ctx, snapshotFetchTO)
+	defer cancel()
+	snap, err := r.Client.FetchSnapshot(fetchCtx)
 	if err != nil {
 		return fmt.Errorf("fetch snapshot: %w", err)
 	}
@@ -188,8 +190,43 @@ func (r *SyncRunner) readStream(ctx context.Context, body io.ReadCloser) (retryM
 	retryMs = 0
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
+	stopIdle := startIdleWatchdog(ctx, body, &lastActivity)
+	defer stopIdle()
+
+	touch := func() {
+		lastActivity.Store(time.Now().UnixNano())
+		r.Store.NoteBytes()
+	}
+	frame := &sseFrame{runner: r, touch: touch}
+	br := bufio.NewReaderSize(body, maxSSELineBytes+1)
+
+	for {
+		if ctx.Err() != nil {
+			return retryMs, ctx.Err()
+		}
+		line, err := readSSELine(br)
+		if err != nil {
+			if err == io.EOF {
+				if line != "" {
+					if derr := frame.dispatch(line, &retryMs); derr != nil {
+						return retryMs, derr
+					}
+				}
+				if ferr := frame.flush(); ferr != nil {
+					return retryMs, ferr
+				}
+				return retryMs, io.EOF
+			}
+			return retryMs, err
+		}
+		if derr := frame.dispatch(line, &retryMs); derr != nil {
+			return retryMs, derr
+		}
+	}
+}
+
+func startIdleWatchdog(ctx context.Context, body io.Closer, lastActivity *atomic.Int64) func() {
 	idleCtx, idleCancel := context.WithCancel(ctx)
-	defer idleCancel()
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
@@ -206,102 +243,87 @@ func (r *SyncRunner) readStream(ctx context.Context, body io.ReadCloser) (retryM
 			}
 		}
 	}()
+	return idleCancel
+}
 
-	touch := func() {
-		lastActivity.Store(time.Now().UnixNano())
-		r.Store.NoteBytes()
-	}
+type sseFrame struct {
+	runner    *SyncRunner
+	touch     func()
+	eventName string
+	idStr     string
+	dataLines []string
+	dataBytes int
+}
 
-	br := bufio.NewReaderSize(body, maxSSELineBytes+1)
-	var (
-		eventName string
-		idStr     string
-		dataLines []string
-		dataBytes int
-	)
-	flush := func() error {
-		defer func() {
-			eventName, idStr, dataLines, dataBytes = "", "", nil, 0
-		}()
-		data := strings.Join(dataLines, "\n")
-		touch()
+func (f *sseFrame) reset() {
+	f.eventName, f.idStr, f.dataLines, f.dataBytes = "", "", nil, 0
+}
 
-		switch eventName {
-		case "":
-			return nil
-		case "shutdown":
-			return fmt.Errorf("shutdown")
-		case "cursor":
-			hw, perr := parseID(idStr)
-			if perr != nil {
-				r.logf("ignore cursor with bad id %q: %v", idStr, perr)
-				return nil
-			}
-			AdvanceCursor(r.Store, hw)
-			return nil
-		default:
-			hw, perr := parseID(idStr)
-			if perr != nil || hw <= 0 {
-				r.logf("ignore %s with bad id %q: %v", eventName, idStr, perr)
-				return nil
-			}
-			if err := ApplyEvent(r.Store, hw, eventName, json.RawMessage(data)); err != nil {
-				return fmt.Errorf("apply %s id=%d: %w", eventName, hw, err)
-			}
-			r.durableSincePersist++
-			r.maybePersist()
+func (f *sseFrame) flush() error {
+	defer f.reset()
+	data := strings.Join(f.dataLines, "\n")
+	f.touch()
+
+	switch f.eventName {
+	case "":
+		return nil
+	case "shutdown":
+		return fmt.Errorf("shutdown")
+	case "cursor":
+		hw, perr := parseID(f.idStr)
+		if perr != nil {
+			f.runner.logf("ignore cursor with bad id %q: %v", f.idStr, perr)
 			return nil
 		}
+		AdvanceCursor(f.runner.Store, hw)
+		return nil
+	default:
+		hw, perr := parseID(f.idStr)
+		if perr != nil || hw <= 0 {
+			f.runner.logf("ignore %s with bad id %q: %v", f.eventName, f.idStr, perr)
+			return nil
+		}
+		if err := ApplyEvent(f.runner.Store, hw, f.eventName, json.RawMessage(data)); err != nil {
+			return fmt.Errorf("apply %s id=%d: %w", f.eventName, hw, err)
+		}
+		f.runner.durableSincePersist++
+		f.runner.maybePersist()
+		return nil
 	}
+}
 
-	for {
-		if ctx.Err() != nil {
-			return retryMs, ctx.Err()
-		}
-		line, err := readSSELine(br)
-		if err != nil {
-			if err == io.EOF {
-				_ = flush()
-				return retryMs, io.EOF
-			}
-			return retryMs, err
-		}
-		touch()
-
-		if line == "" {
-			if err := flush(); err != nil {
-				return retryMs, err
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		if strings.HasPrefix(line, "retry:") {
-			if v, ok := parseRetryMs(strings.TrimSpace(line[len("retry:"):])); ok {
-				retryMs = v
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "event:") {
-			eventName = strings.TrimSpace(line[len("event:"):])
-			continue
-		}
-		if strings.HasPrefix(line, "id:") {
-			idStr = strings.TrimSpace(line[len("id:"):])
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			payload := strings.TrimSpace(line[len("data:"):])
-			next := dataBytes + len(payload) + 1 // account for join newline
-			if next > maxSSEEventBytes {
-				return retryMs, fmt.Errorf("sse event exceeds %d bytes", maxSSEEventBytes)
-			}
-			dataLines = append(dataLines, payload)
-			dataBytes = next
-			continue
-		}
+func (f *sseFrame) dispatch(line string, retryMs *int) error {
+	f.touch()
+	if line == "" {
+		return f.flush()
 	}
+	if strings.HasPrefix(line, ":") {
+		return nil
+	}
+	if strings.HasPrefix(line, "retry:") {
+		if v, ok := parseRetryMs(strings.TrimSpace(line[len("retry:"):])); ok {
+			*retryMs = v
+		}
+		return nil
+	}
+	if strings.HasPrefix(line, "event:") {
+		f.eventName = strings.TrimSpace(line[len("event:"):])
+		return nil
+	}
+	if strings.HasPrefix(line, "id:") {
+		f.idStr = strings.TrimSpace(line[len("id:"):])
+		return nil
+	}
+	if strings.HasPrefix(line, "data:") {
+		payload := strings.TrimSpace(line[len("data:"):])
+		next := f.dataBytes + len(payload) + 1
+		if next > maxSSEEventBytes {
+			return fmt.Errorf("sse event exceeds %d bytes", maxSSEEventBytes)
+		}
+		f.dataLines = append(f.dataLines, payload)
+		f.dataBytes = next
+	}
+	return nil
 }
 
 func readSSELine(br *bufio.Reader) (string, error) {

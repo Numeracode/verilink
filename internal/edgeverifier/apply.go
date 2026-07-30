@@ -139,6 +139,9 @@ func applyKeyUpsert(next *Snapshot, payload json.RawMessage) error {
 		if err != nil {
 			return fmt.Errorf("key.upsert valid_until: %w", err)
 		}
+		if !t.After(vf) {
+			return fmt.Errorf("key.upsert: valid_until must be after valid_from")
+		}
 		vu = &t
 	}
 	next.Keys[p.KeyID] = KeyEntry{
