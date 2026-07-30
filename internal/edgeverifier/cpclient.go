@@ -152,6 +152,12 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 		Keys:             make(map[string]KeyEntry, len(wire.Data.Keys)),
 	}
 	for _, s := range wire.Data.Scores {
+		if s.PrincipalID == "" {
+			return nil, fmt.Errorf("snapshot: score entry missing principal_id")
+		}
+		if _, exists := snap.Scores[s.PrincipalID]; exists {
+			return nil, fmt.Errorf("snapshot: duplicate principal_id %q", s.PrincipalID)
+		}
 		snap.Scores[s.PrincipalID] = ScoreEntry{
 			PrincipalID: s.PrincipalID,
 			EntityKind:  s.EntityKind,
@@ -161,6 +167,12 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 		}
 	}
 	for _, k := range wire.Data.Keys {
+		if k.KeyID == "" {
+			return nil, fmt.Errorf("snapshot: key entry missing key_id")
+		}
+		if _, exists := snap.Keys[k.KeyID]; exists {
+			return nil, fmt.Errorf("snapshot: duplicate key_id %q", k.KeyID)
+		}
 		raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
 		if err != nil {
 			raw, err = base64.RawStdEncoding.DecodeString(k.PublicKeyRaw)
@@ -194,6 +206,9 @@ func parseSnapshotJSON(data []byte) (*Snapshot, error) {
 			return nil, err
 		}
 		snap.Policy = pol
+	}
+	if err := validateSnapshot(snap); err != nil {
+		return nil, fmt.Errorf("snapshot: %w", err)
 	}
 	return snap, nil
 }

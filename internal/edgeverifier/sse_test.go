@@ -7,14 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestSSEShutdownAndCursor(t *testing.T) {
-	var sessions int
+	var eventSessions atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessions++
 		if r.URL.Path == "/v1/sync/snapshot" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
@@ -30,6 +30,7 @@ func TestSSEShutdownAndCursor(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		n := int(eventSessions.Add(1))
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprintf(w, "retry: 100\n\n")
@@ -37,7 +38,7 @@ func TestSSEShutdownAndCursor(t *testing.T) {
 		if flusher != nil {
 			flusher.Flush()
 		}
-		if sessions == 1 {
+		if n == 1 {
 			fmt.Fprintf(w, "event: shutdown\ndata: {}\n\n")
 			if flusher != nil {
 				flusher.Flush()
@@ -62,17 +63,17 @@ func TestSSEShutdownAndCursor(t *testing.T) {
 
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if store.HighWater() >= 2 && sessions >= 2 {
+		if store.HighWater() >= 2 && eventSessions.Load() >= 2 {
 			cancel()
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if store.HighWater() < 2 {
-		t.Fatalf("expected cursor advance, hw=%d sessions=%d", store.HighWater(), sessions)
+		t.Fatalf("expected cursor advance, hw=%d sessions=%d", store.HighWater(), eventSessions.Load())
 	}
-	if sessions < 2 {
-		t.Fatalf("expected reconnect after shutdown, sessions=%d", sessions)
+	if eventSessions.Load() < 2 {
+		t.Fatalf("expected reconnect after shutdown, sessions=%d", eventSessions.Load())
 	}
 	<-done
 }

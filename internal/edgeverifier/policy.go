@@ -12,11 +12,14 @@ const (
 	ModeExpired  SyncMode = "expired"
 )
 
-// EvaluateMode computes freshness mode from store + policy.
+// EvaluateMode computes freshness mode from store + policy using evaluation time now.
 // reachable=false means the sync loop considers CP unreachable.
 func EvaluateMode(store *Store, reachable bool, now time.Time) SyncMode {
 	if store == nil {
 		return ModeOK
+	}
+	if now.IsZero() {
+		now = time.Now()
 	}
 	pol := store.ActivePolicy()
 	maxAge := 300
@@ -25,7 +28,13 @@ func EvaluateMode(store *Store, reachable bool, now time.Time) SyncMode {
 		maxAge = clampAge(pol.MaxSnapshotAgeSeconds)
 		failOpen = pol.FailOpenExpired
 	}
-	age := store.BytesAge()
+	last := store.LastBytesAt()
+	var age time.Duration
+	if last.IsZero() {
+		age = 24 * time.Hour
+	} else {
+		age = now.Sub(last)
+	}
 	stale := age > time.Duration(maxAge)*time.Second
 	if stale {
 		if failOpen {
@@ -36,7 +45,6 @@ func EvaluateMode(store *Store, reachable bool, now time.Time) SyncMode {
 	if !reachable {
 		return ModeDegraded
 	}
-	_ = now
 	return ModeOK
 }
 

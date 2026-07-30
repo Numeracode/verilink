@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -102,9 +103,18 @@ func SaveSnapshot(path string, snap *Snapshot) error {
 
 // LoadSnapshot reads a previously saved snapshot from path.
 func LoadSnapshot(path string) (*Snapshot, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
+	}
+	defer f.Close()
+	limited := &io.LimitedReader{R: f, N: MaxSnapshotBytes + 1}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxSnapshotBytes {
+		return nil, fmt.Errorf("snapshot file exceeds %d bytes", MaxSnapshotBytes)
 	}
 	var env diskEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -120,9 +130,21 @@ func LoadSnapshot(path string) (*Snapshot, error) {
 		Policy:           env.Policy,
 	}
 	for _, s := range env.Scores {
+		if s.PrincipalID == "" {
+			return nil, fmt.Errorf("score entry missing principal_id")
+		}
+		if _, exists := snap.Scores[s.PrincipalID]; exists {
+			return nil, fmt.Errorf("duplicate principal_id %q", s.PrincipalID)
+		}
 		snap.Scores[s.PrincipalID] = ScoreEntry(s)
 	}
 	for _, k := range env.Keys {
+		if k.KeyID == "" {
+			return nil, fmt.Errorf("key entry missing key_id")
+		}
+		if _, exists := snap.Keys[k.KeyID]; exists {
+			return nil, fmt.Errorf("duplicate key_id %q", k.KeyID)
+		}
 		raw, err := DecodePublicKeyRaw(k.PublicKeyRaw)
 		if err != nil {
 			return nil, err
@@ -147,8 +169,8 @@ func LoadSnapshot(path string) (*Snapshot, error) {
 			ValidUntil:   vu,
 		}
 	}
-	if snap.Policy != nil && snap.Policy.MaxSnapshotAgeSeconds > 0 {
-		snap.Policy.MaxSnapshotAgeSeconds = clampAge(snap.Policy.MaxSnapshotAgeSeconds)
+	if err := validateSnapshot(snap); err != nil {
+		return nil, err
 	}
 	return snap, nil
 }

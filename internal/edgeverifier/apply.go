@@ -66,6 +66,9 @@ func ApplyEvent(store *Store, syncVersion int64, eventType string, payload json.
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("score.delete: %w", err)
 		}
+		if p.PrincipalID == "" {
+			return fmt.Errorf("score.delete: missing principal_id")
+		}
 		delete(next.Scores, p.PrincipalID)
 
 	case "key.upsert":
@@ -182,22 +185,20 @@ func parsePolicyPayload(payload json.RawMessage) (*Policy, error) {
 	if p.Threshold == 0 && p.BelowThresholdAction == "" {
 		p.Threshold = 50
 	}
-	if p.BelowThresholdAction == "" {
-		p.BelowThresholdAction = "deny"
-	}
-	if p.UnsignedAction == "" {
-		p.UnsignedAction = "passthrough"
-	}
-	return &Policy{
+	pol := &Policy{
 		Threshold:             p.Threshold,
 		BelowThresholdAction:  p.BelowThresholdAction,
 		UnsignedAction:        p.UnsignedAction,
 		FailOpenExpired:       p.FailOpenExpired,
 		NoDropDecisions:       p.NoDropDecisions,
-		MaxSnapshotAgeSeconds: clampAge(p.MaxSnapshotAgeSeconds),
+		MaxSnapshotAgeSeconds: p.MaxSnapshotAgeSeconds,
 		AllowFingerprints:     p.AllowFingerprints,
 		DenyFingerprints:      p.DenyFingerprints,
-	}, nil
+	}
+	if err := normalizeAndValidatePolicy(pol); err != nil {
+		return nil, fmt.Errorf("policy.replace: %w", err)
+	}
+	return pol, nil
 }
 
 func clampAge(sec int) int {

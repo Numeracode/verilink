@@ -23,7 +23,6 @@ func main() {
 		agentKeysPath     string
 		requireSignatures bool
 		controlPlaneURL   string
-		apiKey            string
 		snapshotPath      string
 		syncEnabled       bool
 	)
@@ -32,10 +31,12 @@ func main() {
 	flag.StringVar(&agentKeysPath, "agent-keys-path", "", "Path to agent keys JSON file (demo/bootstrap; synced keys win when sync enabled)")
 	flag.BoolVar(&requireSignatures, "require-signatures", false, "Require RFC 9421 signatures on all requests")
 	flag.StringVar(&controlPlaneURL, "control-plane-url", envOr("VERILINK_CONTROL_PLANE_URL", ""), "Control plane base URL")
-	flag.StringVar(&apiKey, "api-key", envOr("VERILINK_API_KEY", ""), "Control plane API key")
 	flag.StringVar(&snapshotPath, "snapshot-path", envOr("VERILINK_SNAPSHOT_PATH", ""), "On-disk snapshot path")
 	flag.BoolVar(&syncEnabled, "sync", false, "Enable control-plane sync (also true when URL+key set unless VERILINK_SYNC_ENABLED=false)")
 	flag.Parse()
+
+	// API key is env-only — never accept via argv (shell history / process listings).
+	apiKey := os.Getenv("VERILINK_API_KEY")
 
 	if v := os.Getenv("VERILINK_SYNC_ENABLED"); v == "false" || v == "0" {
 		syncEnabled = false
@@ -77,14 +78,17 @@ func main() {
 	)
 	if syncEnabled {
 		if controlPlaneURL == "" || apiKey == "" {
-			log.Fatal("sync enabled requires -control-plane-url / VERILINK_CONTROL_PLANE_URL and -api-key / VERILINK_API_KEY")
+			log.Fatal("sync enabled requires -control-plane-url / VERILINK_CONTROL_PLANE_URL and VERILINK_API_KEY")
 		}
 		snapStore = edgeverifier.NewStore()
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = 30 * time.Second
 		client := &edgeverifier.ControlPlaneClient{
 			BaseURL: controlPlaneURL,
 			APIKey:  apiKey,
 			HTTPClient: &http.Client{
-				Timeout: 0, // SSE is long-lived; per-request timeouts set on snapshot via context
+				Transport: transport,
+				Timeout:   0, // SSE is long-lived; snapshot fetch uses per-request context deadlines
 			},
 		}
 		syncRunner = edgeverifier.NewSyncRunner(client, snapStore, snapshotPath)
