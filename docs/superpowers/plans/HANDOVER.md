@@ -80,7 +80,7 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 - Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` (merged PR #17)
 - Design: §4.5 + §4.7 + §13 step 12
-- **PR A:** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **in progress** (`feat/go-edge-hardening-pr-a`)
+- **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **open**
 - **PR B:** decision WAL + flush + metrics
 - **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state
 
