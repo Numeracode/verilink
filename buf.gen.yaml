@@ -1,11 +1,13 @@
 version: v1
 
+# Local plugins — avoid buf.build remote plugin registry outages in CI.
+# Versions must match go.mod protobuf/grpc and the previously pinned BSR tags.
 plugins:
-  - plugin: buf.build/protocolbuffers/go:v1.36.11
+  - plugin: go
     out: ..
     opt:
       - module=github.com/messagesgoel-blip/verilink
-  - plugin: buf.build/grpc/go:v1.6.2
+  - plugin: go-grpc
     out: ..
     opt:
       - module=github.com/messagesgoel-blip/verilink
