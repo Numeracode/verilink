@@ -41,11 +41,17 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 ## Locked decisions
 
 1. **Scope = design §13 step 12 (edge sync + WAL), not dashboard/bootstrap/deploy.** RFC 9421 path stays; swap data sources under it.
-2. **Package layout (Go):**
-   - `internal/edgesync/` — control-plane client, SSE loop, event apply, snapshot load/persist
-   - `internal/edgesnapshot/` — immutable in-memory snapshot + atomic swap API
-   - `internal/edgewal/` — bounded decision WAL + flush worker
-   - Wire from `cmd/edge-verifier`; keep `internal/edgeverifier` as the HTTP proxy that **reads** the live snapshot (and optionally records decisions into the WAL)
+2. **Package layout (Go):** expand `internal/edgeverifier/` (flat service package, same pattern as `internal/trustengine/`), thin wiring in `cmd/edge-verifier`. Keep reusable crypto/signing in `pkg/`. Suggested files:
+   - `proxy.go` — existing; consult snapshot + policy; append decisions to WAL
+   - `snapshot.go` — immutable snapshot + `atomic.Pointer` swap; LookupScore / LookupKey / Policy
+   - `apply.go` — ApplySnapshot / ApplyEvent; idempotent by `sync_version`
+   - `sse.go` — Last-Event-ID loop, ping freshness, shutdown, `410`/`429` recovery
+   - `cpclient.go` — authenticated snapshot GET (+ gzip); decision-batch POST when ready
+   - `disk.go` — atomic tmp→rename persist/load
+   - `wal.go` — bounded decision WAL + flush worker
+   - `policy.go` — threshold / unsigned / stale modes from synced policy
+   - Do **not** put SSE/WAL in `pkg/` unless another binary needs them. Optional later: shared DTO package if CP/edge need one schema — not required for v1.
+   - **Design tension:** today's fingerprint-keyed `MockTrustStore` vs identity-from-`keyid` + principal scores — grow a `SnapshotStore` (or equivalent) rather than overloading `MockTrustStore`.
 3. **Auth to control plane:** edge uses a tenant API key (`Authorization: Bearer vrl_…`). Sync routes today are `apiKeyOnly` (any valid key for the tenant — no extra scope gate). Config: `VERILINK_CONTROL_PLANE_URL`, `VERILINK_API_KEY`. Do not invent new scopes in Plan 8 unless a gate is added on the CP side.
 4. **Bootstrap sequence on edge start:**
    1. If a valid on-disk snapshot exists → load into memory (atomic swap), set cursor = `highWaterVersion`
@@ -110,29 +116,30 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 
 ### Task 1: Immutable snapshot store
 
-- `internal/edgesnapshot` with atomic swap
+- `internal/edgeverifier/snapshot.go` with atomic swap
 - Lookups: score by principal, key by keyid, policy getters
 - Unit tests for swap visibility and miss-as-unknown
 
 ### Task 2: Control-plane sync client + SSE loop
 
+- `cpclient.go` + `sse.go` + `apply.go`
 - Snapshot GET (gzip), SSE GET with Last-Event-ID
 - Event apply + cursor tracking + shutdown / 429 / 410 / backoff
 - Wire freshness clock from any received stream bytes
 
 ### Task 3: Disk snapshot persistence
 
-- Atomic write path; load on boot; schema_version envelope
+- `disk.go`: atomic write path; load on boot; schema_version envelope
 
 ### Task 4: Proxy integration
 
-- Replace MockTrustStore / static registry usage when sync enabled
+- Replace MockTrustStore / static registry usage when sync enabled (`SnapshotStore` + synced keys)
 - Enforce policy thresholds + unsigned_action + stale modes + response headers (`X-Verilink-Mode`, trust headers)
 - Record decisions into WAL interface
 
 ### Task 5: Decision WAL
 
-- Bounded store, drop-oldest or no-drop, metrics
+- `wal.go`: bounded store, drop-oldest or no-drop, metrics
 - Flush worker + transport interface (real HTTP when CP route ready; stub OK for PR A)
 
 ### Task 6: cmd/edge-verifier wiring + flags
@@ -142,7 +149,7 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 
 ### Task 7: Tests + docs
 
-- Units + integration as Decision 12
+- Units + integration as Decision 12; extend `internal/testutil/edge_verifier.go` with injectable snapshot / fake CP when useful
 - Update `HANDOVER.md` + shared memory when Plan 8 lands
 
 ---
