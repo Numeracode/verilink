@@ -241,19 +241,9 @@ func (w *DecisionWAL) Append(d Decision) error {
 	}
 	size := int64(len(encoded))
 
-	for w.bytes+size > w.maxBytes && len(w.entries) > 0 {
-		if w.noDrop {
-			w.nextSeq--
-			return ErrWALFull
-		}
-		if err := w.dropOldestLocked(); err != nil {
-			w.nextSeq--
-			return err
-		}
-	}
-	if w.bytes+size > w.maxBytes {
+	if err := w.dropForCapacityLocked(size); err != nil {
 		w.nextSeq--
-		return ErrWALFull
+		return err
 	}
 
 	if err := w.writeBytesLocked(encoded, false); err != nil {
@@ -312,11 +302,13 @@ func (w *DecisionWAL) AckThrough(seq int64) error {
 	return w.maybeCompactLocked()
 }
 
-func (w *DecisionWAL) dropOldestLocked() error {
+// removeOldestLocked drops the oldest in-memory entry without writing disk.
+// Callers that drop multiple entries should write a single coalesced ack afterward.
+func (w *DecisionWAL) removeOldestLocked() (droppedSeq int64, ok bool) {
 	if len(w.entries) == 0 {
-		return nil
+		return 0, false
 	}
-	droppedSeq := w.entries[0].rec.WalSeq
+	droppedSeq = w.entries[0].rec.WalSeq
 	removed := w.entries[0].size
 	w.bytes -= removed
 	w.staleBytes += removed
@@ -327,8 +319,46 @@ func (w *DecisionWAL) dropOldestLocked() error {
 	if w.metrics != nil {
 		w.metrics.DecisionsDropped.Add(1)
 	}
-	// Persist drop via ack watermark (batched fsync — not per-drop force sync).
-	return w.writeLineLocked(walLine{Type: "ack", Through: droppedSeq}, false)
+	return droppedSeq, true
+}
+
+// compactEntriesLocked reallocates when head-slicing left substantial unused capacity.
+func (w *DecisionWAL) compactEntriesLocked() {
+	n := len(w.entries)
+	if n == 0 {
+		w.entries = nil
+		return
+	}
+	if cap(w.entries) >= 64 && cap(w.entries) >= 2*n {
+		w.entries = append([]walEntry(nil), w.entries...)
+	}
+}
+
+// dropForCapacityLocked removes oldest entries until bytes+need fits, writing one ack.
+func (w *DecisionWAL) dropForCapacityLocked(need int64) error {
+	var lastDropped int64
+	dropped := false
+	for w.bytes+need > w.maxBytes && len(w.entries) > 0 {
+		if w.noDrop {
+			return ErrWALFull
+		}
+		seq, ok := w.removeOldestLocked()
+		if !ok {
+			break
+		}
+		lastDropped = seq
+		dropped = true
+	}
+	if dropped {
+		w.compactEntriesLocked()
+		if err := w.writeLineLocked(walLine{Type: "ack", Through: lastDropped}, false); err != nil {
+			return err
+		}
+	}
+	if w.bytes+need > w.maxBytes {
+		return ErrWALFull
+	}
+	return nil
 }
 
 // pruneExpiredLocked drops decisions older than maxAge. Age retention applies even
@@ -338,15 +368,24 @@ func (w *DecisionWAL) pruneExpiredLocked(now time.Time) error {
 		return nil
 	}
 	cutoff := now.Add(-w.maxAge)
+	var lastDropped int64
+	dropped := false
 	for len(w.entries) > 0 {
 		if !w.entries[0].rec.DecidedAt.Before(cutoff) {
 			break
 		}
-		if err := w.dropOldestLocked(); err != nil {
-			return err
+		seq, ok := w.removeOldestLocked()
+		if !ok {
+			break
 		}
+		lastDropped = seq
+		dropped = true
 	}
-	return nil
+	if !dropped {
+		return nil
+	}
+	w.compactEntriesLocked()
+	return w.writeLineLocked(walLine{Type: "ack", Through: lastDropped}, false)
 }
 
 func (w *DecisionWAL) publishBytes() {
@@ -385,15 +424,10 @@ func (w *DecisionWAL) openAndLoad() error {
 		return err
 	}
 	// Enforce capacity after reload once the file handle is open.
-	for w.bytes > w.maxBytes && len(w.entries) > 0 {
-		if w.noDrop {
-			return fmt.Errorf("wal loaded %d bytes exceeds no-drop limit %d; drain or raise VERILINK_WAL_MAX_BYTES", w.bytes, w.maxBytes)
-		}
-		if err := w.dropOldestLocked(); err != nil {
-			return err
-		}
+	if w.noDrop && w.bytes > w.maxBytes {
+		return fmt.Errorf("wal loaded %d bytes exceeds no-drop limit %d; drain or raise VERILINK_WAL_MAX_BYTES", w.bytes, w.maxBytes)
 	}
-	return nil
+	return w.dropForCapacityLocked(0)
 }
 
 func (w *DecisionWAL) loadStream() error {

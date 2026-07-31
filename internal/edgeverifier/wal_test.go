@@ -230,6 +230,80 @@ func TestWALAgeRetentionPrunesOldDecisions(t *testing.T) {
 	}
 }
 
+func countWALAckLines(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, `"t":"ack"`) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestWALCoalescesMultiDropAcks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.wal")
+	m := NewMetrics()
+	wal, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: 900, MaxAge: -1, Metrics: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	for i := 0; i < 12; i++ {
+		if err := wal.Append(Decision{Fingerprint: "s", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := countWALAckLines(t, path)
+	droppedBefore := m.DecisionsDropped.Load()
+	// Large line forces several oldest small entries out in one Append.
+	if err := wal.Append(Decision{
+		Fingerprint: strings.Repeat("L", 400),
+		Action:      "deny",
+		Score:       99,
+		DecidedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after := countWALAckLines(t, path)
+	if after-before != 1 {
+		t.Fatalf("expected one coalesced ack line, before=%d after=%d", before, after)
+	}
+	if m.DecisionsDropped.Load()-droppedBefore < 2 {
+		t.Fatalf("expected multiple in-memory drops coalesced into one ack, delta=%d", m.DecisionsDropped.Load()-droppedBefore)
+	}
+}
+
+func TestWALCompactsEntrySliceAfterDrops(t *testing.T) {
+	m := NewMetrics()
+	wal, err := NewDecisionWAL(WALConfig{MaxBytes: 600, MaxAge: -1, Metrics: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 80; i++ {
+		if err := wal.Append(Decision{Fingerprint: "fp", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wal.mu.Lock()
+	n, c := len(wal.entries), cap(wal.entries)
+	wal.mu.Unlock()
+	if n == 0 {
+		t.Fatal("expected retained entries")
+	}
+	if c >= 64 && c >= 2*n {
+		t.Fatalf("expected entry slice compact after drop churn: len=%d cap=%d", n, c)
+	}
+	if m.DecisionsDropped.Load() == 0 {
+		t.Fatal("expected drops during churn")
+	}
+}
+
 func TestSizedNoDropWALMaxBytes(t *testing.T) {
 	if got := SizedNoDropWALMaxBytes(0, 900); got != defaultNoDropWALBytes {
 		t.Fatalf("floor: %d", got)
