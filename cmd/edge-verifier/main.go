@@ -181,6 +181,9 @@ func mustOpenWAL(cfg edgeConfig, metrics *edgeverifier.Metrics) *edgeverifier.De
 	if cfg.noDropDecisions && maxBytes <= 0 {
 		maxBytes = edgeverifier.NoDropWALMaxBytes(0)
 	}
+	if cfg.walMaxAge < 0 {
+		log.Fatalf("decision WAL: -wal-max-age must not be negative (got %s); a negative value disables identifier retention", cfg.walMaxAge)
+	}
 	wal, err := edgeverifier.NewDecisionWAL(edgeverifier.WALConfig{
 		Path:     cfg.walPath,
 		MaxBytes: maxBytes,
@@ -284,6 +287,7 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
+		log.Printf("invalid %s=%q: %v; using %s", key, v, err, fallback)
 		return fallback
 	}
 	return d
