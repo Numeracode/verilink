@@ -20,6 +20,9 @@ type FlushTransport interface {
 // FlushBatch is one idempotent decision delivery unit.
 // Decisions may carry PrincipalID/Fingerprint; the edge WAL retains them at most
 // DecisionWAL.MaxAge (default 24h) regardless of flush success.
+//
+// PayloadHash is sha256 of the canonical decisions JSON array only (decisionWire
+// bytes), not the batch envelope (batch_id / wal_seq range / hash fields).
 type FlushBatch struct {
 	BatchID     string     `json:"batch_id"`
 	FirstWalSeq int64      `json:"first_wal_seq"`
@@ -28,8 +31,11 @@ type FlushBatch struct {
 	Decisions   []Decision `json:"decisions"`
 }
 
-// MarshalJSON emits decisions as decisionWire so payload_hash verification matches
-// the canonical bytes hashed in buildFlushBatch (no omitempty drift).
+// MarshalJSON emits the HTTP envelope with decisions as decisionWire so the
+// wire form matches buildFlushBatch hashing (no omitempty drift).
+// PayloadHash itself stays the hash of the decisions array only — the envelope
+// fields are never included in that digest (CP assertBatchShape hashes
+// body.decisions the same way).
 func (b FlushBatch) MarshalJSON() ([]byte, error) {
 	wires := make([]decisionWire, len(b.Decisions))
 	for i, d := range b.Decisions {
