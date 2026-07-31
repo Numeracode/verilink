@@ -19,11 +19,11 @@ type FlushTransport interface {
 // Decisions may carry PrincipalID/Fingerprint; the edge WAL retains them at most
 // DecisionWAL.MaxAge (default 24h) regardless of flush success.
 type FlushBatch struct {
-	BatchID     string
-	FirstWalSeq int64
-	LastWalSeq  int64
-	PayloadHash string
-	Decisions   []Decision
+	BatchID     string     `json:"batch_id"`
+	FirstWalSeq int64      `json:"first_wal_seq"`
+	LastWalSeq  int64      `json:"last_wal_seq"`
+	PayloadHash string     `json:"payload_hash"`
+	Decisions   []Decision `json:"decisions"`
 }
 
 // StubTransport logs batches and succeeds (Plan 8 PR B until CP ingest ships).
@@ -185,7 +185,7 @@ func buildFlushBatch(decisions []Decision) (FlushBatch, error) {
 		return FlushBatch{}, err
 	}
 	sum := sha256.Sum256(payload)
-	// Deterministic batch id from payload hash so retries dedupe on the same content.
+	// Deterministic UUID from payload hash so retries dedupe on the same content.
 	id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 	return FlushBatch{
 		BatchID:     id,

@@ -13,6 +13,7 @@ import principalsRouter from './routes/principals.js';
 import attestationsRouter from './routes/attestations.js';
 import syncRouter from './routes/sync.js';
 import adminRouter from './routes/admin.js';
+import decisionsRouter from './routes/decisions.js';
 
 export function createApp() {
   const app = express();
@@ -44,6 +45,7 @@ export function createApp() {
   app.use('/v1/attestations', attestationsRouter);
   app.use('/v1/sync', syncRouter);
   app.use('/v1/admin', adminRouter);
+  app.use('/v1/decisions', decisionsRouter);
   // Additional routes added in later plans:
   // app.use('/v1/policies', policiesRouter);
   // app.use('/v1/api-keys', apikeysRouter);

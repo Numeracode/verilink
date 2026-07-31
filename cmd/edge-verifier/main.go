@@ -46,11 +46,12 @@ func main() {
 		syncCancel  context.CancelFunc
 		syncCtx     context.Context
 		syncRunner  *edgeverifier.SyncRunner
+		cpClient    *edgeverifier.ControlPlaneClient
 		flushCancel context.CancelFunc
 		bg          sync.WaitGroup
 	)
 	if cfg.syncEnabled {
-		snapStore, syncRunner, syncCtx, syncCancel = mustStartSync(cfg, metrics, decisionWAL)
+		snapStore, syncRunner, cpClient, syncCtx, syncCancel = mustStartSync(cfg, metrics, decisionWAL)
 	}
 
 	backendServer := startMockBackend()
@@ -64,7 +65,14 @@ func main() {
 	if decisionWAL != nil {
 		var flushCtx context.Context
 		flushCtx, flushCancel = context.WithCancel(context.Background())
-		worker := edgeverifier.NewFlushWorker(decisionWAL, &edgeverifier.StubTransport{Logger: log.Default()})
+		var transport edgeverifier.FlushTransport = &edgeverifier.StubTransport{Logger: log.Default()}
+		if cpClient != nil {
+			transport = &edgeverifier.HTTPFlushTransport{Client: cpClient}
+			log.Printf("Decision flush transport: HTTP → %s/v1/decisions/batch", cfg.controlPlaneURL)
+		} else {
+			log.Printf("Decision flush transport: stub (no control plane)")
+		}
+		worker := edgeverifier.NewFlushWorker(decisionWAL, transport)
 		bg.Add(1)
 		go func() {
 			defer bg.Done()
@@ -199,7 +207,7 @@ func mustOpenWAL(cfg edgeConfig, metrics *edgeverifier.Metrics) *edgeverifier.De
 	return wal
 }
 
-func mustStartSync(cfg edgeConfig, metrics *edgeverifier.Metrics, wal *edgeverifier.DecisionWAL) (*edgeverifier.Store, *edgeverifier.SyncRunner, context.Context, context.CancelFunc) {
+func mustStartSync(cfg edgeConfig, metrics *edgeverifier.Metrics, wal *edgeverifier.DecisionWAL) (*edgeverifier.Store, *edgeverifier.SyncRunner, *edgeverifier.ControlPlaneClient, context.Context, context.CancelFunc) {
 	if cfg.controlPlaneURL == "" || cfg.apiKey == "" {
 		log.Fatal("sync enabled requires -control-plane-url / VERILINK_CONTROL_PLANE_URL and VERILINK_API_KEY")
 	}
@@ -229,7 +237,7 @@ func mustStartSync(cfg edgeConfig, metrics *edgeverifier.Metrics, wal *edgeverif
 		wal.SetNoDrop(pol.NoDropDecisions)
 	}
 	log.Printf("Control-plane sync enabled against %s", cfg.controlPlaneURL)
-	return snapStore, runner, syncCtx, syncCancel
+	return snapStore, runner, client, syncCtx, syncCancel
 }
 
 func startMockBackend() *http.Server {
