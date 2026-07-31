@@ -1,7 +1,8 @@
 # Plan 8 — Go edge hardening (SSE client + snapshot + WAL)
 
 **Depends on:** Plans 1–7 (merged to `main`, including PR #16)  
-**Target branch:** `feat/go-edge-hardening`  
+**Status:** **DONE** — PR A (#18), PR B (#20), PR C (#21) merged. Next: dashboard (§13 step 13).  
+**Target branch:** `feat/go-edge-hardening` (historical; work landed via split PRs)  
 **Goal:** Wire the Go edge verifier to the control-plane sync surface: versioned SSE client, atomic in-memory snapshot (scores/keys/policy), atomic on-disk snapshot persistence, and a bounded local decision WAL with flush + drop metrics.
 
 **Maps to:** productization design §4.5 (edge sync + decision path), §4.7 (degraded modes), §13 step 12.
@@ -101,7 +102,7 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
     - Default `wal_max_bytes = 256 MiB`; on full → **drop oldest** + increment `decisions_dropped_total` (Prometheus counter)
     - Enterprise `no_drop_decisions` (from policy or flag): block writers when full; size via `max(8 GiB, ceil(p99_wal_bytes/s × required_outage_seconds × 1.5))` with `required_outage_seconds` default **900** (independent of snapshot age)
     - Flush worker: batch by count/time with `batch_id` + `payload_hash`; POST to control-plane decision ingest when the route exists
-    - **v1 pragmatism:** if decision ingest HTTP API is not yet exposed on the control plane, implement WAL + metrics + an internal flush interface with a **stub transport** (log/no-op) behind an interface; do **not** block Plan 8 on building the full CP ingest handler — track as Task follow-up / Plan 8 PR C if needed. Schema for `decision_*` already exists (migration 006).
+    - **v1 pragmatism (executed):** PR B shipped WAL + metrics + stub flush transport; PR C (#21) wired `POST /v1/decisions/batch` + HTTP flush. Schema for `decision_*` already existed (migration 006).
 11. **Config flags (edge):**
     - `VERILINK_CONTROL_PLANE_URL` (required for sync mode)
     - `VERILINK_API_KEY` (required for sync mode)
