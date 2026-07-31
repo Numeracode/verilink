@@ -198,3 +198,70 @@ func TestSizedNoDropWALMaxBytes(t *testing.T) {
 type flushFunc func(context.Context, FlushBatch) error
 
 func (f flushFunc) Flush(ctx context.Context, batch FlushBatch) error { return f(ctx, batch) }
+
+func TestWALCompactKeepsAppendWorking(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.wal")
+	wal, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	// Build >1MiB of live bytes then ack so stale triggers compact.
+	payload := string(make([]byte, 64<<10)) // 64 KiB fingerprint field
+	for i := 0; i < 20; i++ {
+		if err := wal.Append(Decision{
+			Fingerprint: payload,
+			Action:      "allow",
+			Score:       i,
+			DecidedAt:   time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending := wal.Pending(100)
+	if len(pending) == 0 {
+		t.Fatal("expected pending")
+	}
+	lastSeq := pending[len(pending)-1].WalSeq
+	if err := wal.AckThrough(lastSeq); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Append(Decision{Fingerprint: "after-compact", Action: "deny", Score: 1, DecidedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append after compact: %v", err)
+	}
+	got := wal.Pending(10)
+	if len(got) != 1 || got[0].Fingerprint != "after-compact" {
+		t.Fatalf("pending=%+v", got)
+	}
+}
+
+func TestSyncRunnerAppliesNoDropFromPolicy(t *testing.T) {
+	wal, err := NewDecisionWAL(WALConfig{MaxBytes: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	ApplySnapshot(store, &Snapshot{
+		HighWaterVersion: 1,
+		Scores:           map[string]ScoreEntry{},
+		Keys:             map[string]KeyEntry{},
+		Policy:           &Policy{NoDropDecisions: true, Threshold: 50, MaxSnapshotAgeSeconds: 300},
+	})
+	r := NewSyncRunner(nil, store, "", WithDecisionWAL(wal))
+	r.syncWALPolicy()
+	if !wal.NoDrop() {
+		t.Fatal("expected SetNoDrop from synced policy")
+	}
+	ApplySnapshot(store, &Snapshot{
+		HighWaterVersion: 2,
+		Scores:           map[string]ScoreEntry{},
+		Keys:             map[string]KeyEntry{},
+		Policy:           &Policy{NoDropDecisions: false, Threshold: 50, MaxSnapshotAgeSeconds: 300},
+	})
+	r.syncWALPolicy()
+	if wal.NoDrop() {
+		t.Fatal("expected no-drop cleared when policy disables it")
+	}
+}

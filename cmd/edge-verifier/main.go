@@ -202,7 +202,10 @@ func mustStartSync(cfg edgeConfig, metrics *edgeverifier.Metrics, wal *edgeverif
 			Timeout:   0,
 		},
 	}
-	runner := edgeverifier.NewSyncRunner(client, snapStore, cfg.snapshotPath, edgeverifier.WithMetrics(metrics))
+	runner := edgeverifier.NewSyncRunner(client, snapStore, cfg.snapshotPath,
+		edgeverifier.WithMetrics(metrics),
+		edgeverifier.WithDecisionWAL(wal),
+	)
 	syncCtx, syncCancel := context.WithCancel(context.Background())
 	bootCtx, bootCancel := context.WithTimeout(syncCtx, 30*time.Second)
 	if err := runner.Bootstrap(bootCtx); err != nil {

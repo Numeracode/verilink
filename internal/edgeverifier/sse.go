@@ -39,6 +39,7 @@ type SyncRunner struct {
 	Logger       *log.Logger
 	OnReachable  func(bool)
 	Metrics      *Metrics
+	DecisionWAL  *DecisionWAL
 
 	persistEveryEvents  int
 	persistEvery        time.Duration
@@ -71,6 +72,13 @@ func WithMetrics(m *Metrics) SyncRunnerOption {
 	}
 }
 
+// WithDecisionWAL wires policy no-drop updates into the decision WAL (not the request path).
+func WithDecisionWAL(w *DecisionWAL) SyncRunnerOption {
+	return func(r *SyncRunner) {
+		r.DecisionWAL = w
+	}
+}
+
 // NewSyncRunner builds a runner. SnapshotPath may be empty to skip disk I/O.
 func NewSyncRunner(client *ControlPlaneClient, store *Store, snapshotPath string, opts ...SyncRunnerOption) *SyncRunner {
 	r := &SyncRunner{
@@ -93,11 +101,21 @@ func (r *SyncRunner) setReachable(ok bool) {
 	}
 }
 
+func (r *SyncRunner) syncWALPolicy() {
+	if r == nil || r.DecisionWAL == nil || r.Store == nil {
+		return
+	}
+	if pol := r.Store.ActivePolicy(); pol != nil {
+		r.DecisionWAL.SetNoDrop(pol.NoDropDecisions)
+	}
+}
+
 // Bootstrap loads disk snapshot if present, else fetches from control plane.
 func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 	if r.SnapshotPath != "" {
 		if snap, err := LoadSnapshot(r.SnapshotPath); err == nil {
 			ApplySnapshot(r.Store, snap)
+			r.syncWALPolicy()
 			r.lastPersist = time.Now()
 			r.logf("loaded disk snapshot hw=%d", r.Store.HighWater())
 			return nil
@@ -110,6 +128,7 @@ func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("fetch snapshot: %w", err)
 	}
 	ApplySnapshot(r.Store, snap)
+	r.syncWALPolicy()
 	if err := r.persist(r.Store.SnapshotForPersist()); err != nil {
 		r.logf("persist after bootstrap: %v", err)
 	}
@@ -206,6 +225,7 @@ func (r *SyncRunner) recoverSnapshot(ctx context.Context) error {
 		return err
 	}
 	ApplySnapshot(r.Store, snap)
+	r.syncWALPolicy()
 	return r.persist(r.Store.SnapshotForPersist())
 }
 
@@ -308,6 +328,9 @@ func (f *sseFrame) flush() error {
 		}
 		if err := ApplyEvent(f.runner.Store, hw, f.eventName, json.RawMessage(data)); err != nil {
 			return fmt.Errorf("apply %s id=%d: %w", f.eventName, hw, err)
+		}
+		if f.eventName == "policy.replace" {
+			f.runner.syncWALPolicy()
 		}
 		f.runner.durableSincePersist++
 		f.runner.maybePersist()

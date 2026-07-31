@@ -110,12 +110,18 @@ func NewDecisionWAL(cfg WALConfig) (*DecisionWAL, error) {
 }
 
 // SetNoDrop merges tenant policy into effective no-drop without clearing a local override.
+// No-op when the effective value is unchanged (avoids hot-path contention).
 func (w *DecisionWAL) SetNoDrop(v bool) {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
-	w.noDrop = w.forcedNoDrop || v
+	next := w.forcedNoDrop || v
+	if w.noDrop == next {
+		w.mu.Unlock()
+		return
+	}
+	w.noDrop = next
 	w.mu.Unlock()
 }
 
@@ -540,32 +546,31 @@ func (w *DecisionWAL) compactLocked() error {
 		return err
 	}
 
-	prev := w.file
-	_ = prev.Close()
-	w.file = nil
+	// Keep the live fd open until the compacted file is renamed and re-opened so
+	// Append never observes a nil handle mid-compact (mu is held for the whole swap).
 	if err := os.Rename(tmp, w.path); err != nil {
 		_ = os.Remove(tmp)
-		// Re-open previous path so Append does not permanently disable the WAL.
-		nf, oerr := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
-		if oerr == nil {
-			w.file = nf
-		}
 		return err
 	}
-	if err := syncDir(dir); err != nil {
-		nf, oerr := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
-		if oerr == nil {
-			w.file = nf
-		}
-		return err
-	}
+	dirErr := syncDir(dir)
 	nf, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
-		return err
+		// Path already points at compacted content; leave prior fd open as best effort.
+		if dirErr != nil {
+			return fmt.Errorf("wal compact reopen: %w (dir sync: %v)", err, dirErr)
+		}
+		return fmt.Errorf("wal compact reopen: %w", err)
 	}
+	prev := w.file
 	w.file = nf
+	if prev != nil {
+		_ = prev.Close()
+	}
 	w.staleBytes = 0
 	w.sinceSync = 0
+	if dirErr != nil {
+		return dirErr
+	}
 	return nil
 }
 

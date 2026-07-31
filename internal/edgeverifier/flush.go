@@ -108,7 +108,9 @@ func (w *FlushWorker) Run(ctx context.Context) {
 			cancel()
 			return
 		case <-ticker.C:
-			_ = w.FlushOnce(ctx)
+			flushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_ = w.FlushOnce(flushCtx)
+			cancel()
 		}
 	}
 }

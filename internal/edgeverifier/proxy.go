@@ -227,11 +227,12 @@ func (p *EdgeVerifierProxy) annotateTrust(w http.ResponseWriter, r *http.Request
 		}
 		fp, fpErr := fingerprint.Generate(fpData)
 		if fpErr == nil {
-			score, _ := p.trustStore.GetTrustScore(fp)
+			ts, _ := p.trustStore.GetTrustScore(fp)
+			score = int(ts)
 			w.Header().Set("X-Verilink-Trust-Score", fmt.Sprintf("%d", score))
 		}
 	}
-	return false, "", "", 0, false
+	return false, "", "", score, false
 }
 
 func (p *EdgeVerifierProxy) recordDecision(r *http.Request, d Decision) {
@@ -244,12 +245,7 @@ func (p *EdgeVerifierProxy) recordDecision(r *http.Request, d Decision) {
 	if d.DecidedAt.IsZero() {
 		d.DecidedAt = time.Now().UTC()
 	}
-	// Policy can enable no-drop; local CLI/env override stays sticky inside DecisionWAL.
-	if p.snapshot != nil {
-		if active := p.snapshot.ActivePolicy(); active != nil {
-			p.wal.SetNoDrop(active.NoDropDecisions)
-		}
-	}
+	// No-drop is synced from policy on snapshot/policy.apply (SyncRunner), not per request.
 	if err := p.wal.Append(d); err != nil {
 		if errors.Is(err, ErrWALFull) {
 			log.Printf("WAL_FULL: action=%s fingerprint=%s", d.Action, d.Fingerprint)
