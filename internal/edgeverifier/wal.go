@@ -17,7 +17,8 @@ const (
 	defaultWALMaxBytes    = 256 << 20 // 256 MiB
 	defaultNoDropWALBytes = 8 << 30   // 8 GiB
 	defaultOutageSeconds  = 900
-	walSchemaVersion      = 2 // JSONL append-only (v1 was full-rewrite envelope)
+	defaultWALMaxAge      = 24 * time.Hour // PII/identifier retention bound independent of flush success
+	walSchemaVersion      = 2              // JSONL append-only (v1 was full-rewrite envelope)
 	walSyncEveryN         = 32
 	walMaxLineBytes       = 1 << 20 // 1 MiB per JSONL line
 )
@@ -38,10 +39,13 @@ type Decision struct {
 }
 
 // DecisionWAL is a bounded, append-only local decision log with drop-oldest or no-drop.
+// Records are also age-bounded (default 24h) so PrincipalID/Fingerprint cannot linger
+// indefinitely during a prolonged control-plane outage.
 type DecisionWAL struct {
 	mu           sync.Mutex
 	path         string
 	maxBytes     int64
+	maxAge       time.Duration
 	forcedNoDrop bool // sticky local override (CLI/env); never cleared by policy
 	noDrop       bool // effective: forcedNoDrop || policy
 	metrics      *Metrics
@@ -78,8 +82,11 @@ type walLine struct {
 type WALConfig struct {
 	Path     string
 	MaxBytes int64
-	NoDrop   bool // sticky local override when true
-	Metrics  *Metrics
+	// MaxAge is the on-disk retention window for decision identifiers (default 24h).
+	// Zero selects the default; negative disables age pruning (tests only).
+	MaxAge  time.Duration
+	NoDrop  bool // sticky local override when true
+	Metrics *Metrics
 }
 
 // NewDecisionWAL creates a WAL. Loads existing JSONL from Path when set.
@@ -92,9 +99,14 @@ func NewDecisionWAL(cfg WALConfig) (*DecisionWAL, error) {
 			maxBytes = defaultWALMaxBytes
 		}
 	}
+	maxAge := cfg.MaxAge
+	if maxAge == 0 {
+		maxAge = defaultWALMaxAge
+	}
 	w := &DecisionWAL{
 		path:         cfg.Path,
 		maxBytes:     maxBytes,
+		maxAge:       maxAge,
 		forcedNoDrop: cfg.NoDrop,
 		noDrop:       cfg.NoDrop,
 		metrics:      cfg.Metrics,
@@ -153,6 +165,14 @@ func (w *DecisionWAL) MaxBytes() int64 {
 	return w.maxBytes
 }
 
+// MaxAge returns the retention window for decision records.
+func (w *DecisionWAL) MaxAge() time.Duration {
+	if w == nil {
+		return 0
+	}
+	return w.maxAge
+}
+
 // Len returns pending decision count.
 func (w *DecisionWAL) Len() int {
 	if w == nil {
@@ -191,6 +211,10 @@ func (w *DecisionWAL) Append(d Decision) error {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if err := w.pruneExpiredLocked(time.Now().UTC()); err != nil {
+		return err
+	}
 
 	d.WalSeq = w.nextSeq
 	w.nextSeq++
@@ -307,6 +331,24 @@ func (w *DecisionWAL) dropOldestLocked() error {
 	return w.writeLineLocked(walLine{Type: "ack", Through: droppedSeq}, false)
 }
 
+// pruneExpiredLocked drops decisions older than maxAge. Age retention applies even
+// under no-drop so identifier data cannot linger past the configured window.
+func (w *DecisionWAL) pruneExpiredLocked(now time.Time) error {
+	if w.maxAge < 0 {
+		return nil
+	}
+	cutoff := now.Add(-w.maxAge)
+	for len(w.entries) > 0 {
+		if !w.entries[0].rec.DecidedAt.Before(cutoff) {
+			break
+		}
+		if err := w.dropOldestLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (w *DecisionWAL) publishBytes() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -339,10 +381,13 @@ func (w *DecisionWAL) openAndLoad() error {
 	if info.Size() == 0 {
 		return w.writeLineLocked(walLine{Type: "meta", SchemaVersion: walSchemaVersion, NextSeq: w.nextSeq}, true)
 	}
+	if err := w.pruneExpiredLocked(time.Now().UTC()); err != nil {
+		return err
+	}
 	// Enforce capacity after reload once the file handle is open.
 	for w.bytes > w.maxBytes && len(w.entries) > 0 {
 		if w.noDrop {
-			break
+			return fmt.Errorf("wal loaded %d bytes exceeds no-drop limit %d; drain or raise VERILINK_WAL_MAX_BYTES", w.bytes, w.maxBytes)
 		}
 		if err := w.dropOldestLocked(); err != nil {
 			return err
@@ -352,6 +397,12 @@ func (w *DecisionWAL) openAndLoad() error {
 }
 
 func (w *DecisionWAL) loadStream() error {
+	ackThrough, nextSeq, err := w.scanWALWatermarks()
+	if err != nil {
+		return err
+	}
+	w.nextSeq = nextSeq
+
 	f, err := os.Open(w.path)
 	if err != nil {
 		return err
@@ -361,11 +412,11 @@ func (w *DecisionWAL) loadStream() error {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), walMaxLineBytes)
 
-	pending := make(map[int64]Decision)
-	var order []int64
-	var ackThrough int64
 	var sawMeta bool
 	var tornTail error
+
+	w.entries = w.entries[:0]
+	w.bytes = 0
 
 	for sc.Scan() {
 		raw := sc.Bytes()
@@ -374,7 +425,6 @@ func (w *DecisionWAL) loadStream() error {
 		}
 		var line walLine
 		if err := json.Unmarshal(raw, &line); err != nil {
-			// Defer: if this is the final line, treat as crash-torn tail.
 			if tornTail != nil {
 				return fmt.Errorf("wal load line: %w", tornTail)
 			}
@@ -382,7 +432,6 @@ func (w *DecisionWAL) loadStream() error {
 			continue
 		}
 		if tornTail != nil {
-			// A later valid line means the previous corrupt line was not a torn tail.
 			return fmt.Errorf("wal load line: %w", tornTail)
 		}
 		switch line.Type {
@@ -391,10 +440,10 @@ func (w *DecisionWAL) loadStream() error {
 				return fmt.Errorf("unsupported wal schema_version %d", line.SchemaVersion)
 			}
 			sawMeta = true
-			if line.NextSeq > w.nextSeq {
-				w.nextSeq = line.NextSeq
-			}
 		case "dec":
+			if line.WalSeq <= ackThrough {
+				continue
+			}
 			d := Decision{
 				WalSeq:      line.WalSeq,
 				Fingerprint: line.Fingerprint,
@@ -405,17 +454,11 @@ func (w *DecisionWAL) loadStream() error {
 				Action:      line.Action,
 				DecidedAt:   line.DecidedAt,
 			}
-			if _, ok := pending[d.WalSeq]; !ok {
-				order = append(order, d.WalSeq)
-			}
-			pending[d.WalSeq] = d
-			if d.WalSeq >= w.nextSeq {
-				w.nextSeq = d.WalSeq + 1
-			}
+			size := estimateDecisionBytes(d)
+			w.entries = append(w.entries, walEntry{rec: d, size: size})
+			w.bytes += size
 		case "ack":
-			if line.Through > ackThrough {
-				ackThrough = line.Through
-			}
+			// Ack watermark already applied via first pass.
 		default:
 			// ignore unknown for forward-compat
 		}
@@ -426,23 +469,61 @@ func (w *DecisionWAL) loadStream() error {
 	if tornTail != nil {
 		log.Printf("edgesync: ignoring torn trailing WAL line on recovery: %v", tornTail)
 	}
-	if !sawMeta && len(order) == 0 && ackThrough == 0 {
+	if !sawMeta && len(w.entries) == 0 && ackThrough == 0 {
 		return nil
-	}
-
-	w.entries = w.entries[:0]
-	w.bytes = 0
-	for _, seq := range order {
-		if seq <= ackThrough {
-			continue
-		}
-		d := pending[seq]
-		size := estimateDecisionBytes(d)
-		w.entries = append(w.entries, walEntry{rec: d, size: size})
-		w.bytes += size
 	}
 	w.staleBytes = 0
 	return nil
+}
+
+// scanWALWatermarks reads the WAL once for ackThrough and nextSeq without retaining
+// acknowledged decision payloads in memory.
+func (w *DecisionWAL) scanWALWatermarks() (ackThrough, nextSeq int64, err error) {
+	f, err := os.Open(w.path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), walMaxLineBytes)
+	nextSeq = 1
+	var tornTail error
+	for sc.Scan() {
+		raw := sc.Bytes()
+		if len(raw) == 0 {
+			continue
+		}
+		var line walLine
+		if err := json.Unmarshal(raw, &line); err != nil {
+			if tornTail != nil {
+				return 0, 0, fmt.Errorf("wal load line: %w", tornTail)
+			}
+			tornTail = err
+			continue
+		}
+		if tornTail != nil {
+			return 0, 0, fmt.Errorf("wal load line: %w", tornTail)
+		}
+		switch line.Type {
+		case "meta":
+			if line.NextSeq > nextSeq {
+				nextSeq = line.NextSeq
+			}
+		case "dec":
+			if line.WalSeq >= nextSeq {
+				nextSeq = line.WalSeq + 1
+			}
+		case "ack":
+			if line.Through > ackThrough {
+				ackThrough = line.Through
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 0, 0, err
+	}
+	return ackThrough, nextSeq, nil
 }
 
 func (w *DecisionWAL) writeLineLocked(line walLine, forceSync bool) error {
@@ -617,7 +698,11 @@ func SizedNoDropWALMaxBytes(p99BytesPerSec float64, outageSeconds int) int64 {
 	if p99BytesPerSec < 0 {
 		p99BytesPerSec = 0
 	}
-	calc := int64(math.Ceil(p99BytesPerSec * float64(outageSeconds) * 1.5))
+	want := math.Ceil(p99BytesPerSec * float64(outageSeconds) * 1.5)
+	if want >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	calc := int64(want)
 	if calc < defaultNoDropWALBytes {
 		return defaultNoDropWALBytes
 	}

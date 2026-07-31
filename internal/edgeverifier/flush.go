@@ -16,6 +16,8 @@ type FlushTransport interface {
 }
 
 // FlushBatch is one idempotent decision delivery unit.
+// Decisions may carry PrincipalID/Fingerprint; the edge WAL retains them at most
+// DecisionWAL.MaxAge (default 24h) regardless of flush success.
 type FlushBatch struct {
 	BatchID     string
 	FirstWalSeq int64
@@ -98,7 +100,11 @@ func (w *FlushWorker) Run(ctx context.Context) {
 	if w == nil || w.WAL == nil {
 		return
 	}
-	ticker := time.NewTicker(w.interval)
+	interval := w.interval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -116,21 +122,36 @@ func (w *FlushWorker) Run(ctx context.Context) {
 }
 
 // FlushAll drains pending decisions in batches until empty or ctx ends.
+// Progress is measured by acked wal_seq so concurrent Append cannot false-trigger
+// a "no progress" failure during shutdown.
 func (w *FlushWorker) FlushAll(ctx context.Context) error {
+	if w == nil || w.WAL == nil {
+		return nil
+	}
+	var lastAcked int64
 	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if w.WAL.Len() == 0 {
+		pending := w.WAL.Pending(1)
+		if len(pending) == 0 {
 			return nil
 		}
-		before := w.WAL.Len()
+		if pending[0].WalSeq <= lastAcked {
+			return fmt.Errorf("flush made no progress (wal_seq=%d)", pending[0].WalSeq)
+		}
+		head := pending[0].WalSeq
 		if err := w.FlushOnce(ctx); err != nil {
 			return err
 		}
-		if w.WAL.Len() >= before {
-			return fmt.Errorf("flush made no progress (%d pending)", before)
+		after := w.WAL.Pending(1)
+		if len(after) == 0 {
+			return nil
 		}
+		if after[0].WalSeq <= head {
+			return fmt.Errorf("flush made no progress (wal_seq=%d)", head)
+		}
+		lastAcked = head
 	}
 }
 

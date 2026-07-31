@@ -105,9 +105,11 @@ func (r *SyncRunner) syncWALPolicy() {
 	if r == nil || r.DecisionWAL == nil || r.Store == nil {
 		return
 	}
+	noDrop := false
 	if pol := r.Store.ActivePolicy(); pol != nil {
-		r.DecisionWAL.SetNoDrop(pol.NoDropDecisions)
+		noDrop = pol.NoDropDecisions
 	}
+	r.DecisionWAL.SetNoDrop(noDrop)
 }
 
 // Bootstrap loads disk snapshot if present, else fetches from control plane.

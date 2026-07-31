@@ -28,6 +28,7 @@ type edgeConfig struct {
 	snapshotPath      string
 	walPath           string
 	walMaxBytes       int64
+	walMaxAge         time.Duration
 	noDropDecisions   bool
 	syncEnabled       bool
 }
@@ -92,7 +93,9 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	bg.Add(1)
 	go func() {
+		defer bg.Done()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
@@ -114,7 +117,10 @@ func main() {
 	}
 	bg.Wait()
 	if decisionWAL != nil {
-		_ = decisionWAL.Close()
+		if err := decisionWAL.Close(); err != nil {
+			log.Printf("decision WAL close: %v", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -127,6 +133,7 @@ func parseFlags() edgeConfig {
 	flag.StringVar(&cfg.snapshotPath, "snapshot-path", envOr("VERILINK_SNAPSHOT_PATH", ""), "On-disk snapshot path")
 	flag.StringVar(&cfg.walPath, "wal-path", envOr("VERILINK_WAL_PATH", ""), "On-disk decision WAL path")
 	flag.Int64Var(&cfg.walMaxBytes, "wal-max-bytes", envInt64("VERILINK_WAL_MAX_BYTES", 0), "Decision WAL max bytes (0 = default 256MiB or 8GiB when no-drop)")
+	flag.DurationVar(&cfg.walMaxAge, "wal-max-age", envDuration("VERILINK_WAL_MAX_AGE", 0), "Decision WAL retention window (0 = default 24h; drops identifiers even under no-drop)")
 	flag.BoolVar(&cfg.noDropDecisions, "no-drop-decisions", envBool("VERILINK_NO_DROP_DECISIONS", false), "Block when WAL full instead of dropping oldest")
 	flag.BoolVar(&cfg.syncEnabled, "sync", false, "Enable control-plane sync (also true when URL+key set unless VERILINK_SYNC_ENABLED=false)")
 	flag.Parse()
@@ -177,13 +184,15 @@ func mustOpenWAL(cfg edgeConfig, metrics *edgeverifier.Metrics) *edgeverifier.De
 	wal, err := edgeverifier.NewDecisionWAL(edgeverifier.WALConfig{
 		Path:     cfg.walPath,
 		MaxBytes: maxBytes,
+		MaxAge:   cfg.walMaxAge,
 		NoDrop:   cfg.noDropDecisions,
 		Metrics:  metrics,
 	})
 	if err != nil {
 		log.Fatalf("decision WAL: %v", err)
 	}
-	log.Printf("Decision WAL enabled path=%q max_bytes=%d no_drop=%v", cfg.walPath, wal.MaxBytes(), cfg.noDropDecisions)
+	log.Printf("Decision WAL enabled path=%q max_bytes=%d max_age=%s no_drop=%v",
+		cfg.walPath, wal.MaxBytes(), wal.MaxAge(), cfg.noDropDecisions)
 	return wal
 }
 
@@ -266,4 +275,16 @@ func envInt64(key string, fallback int64) int64 {
 		return fallback
 	}
 	return n
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
