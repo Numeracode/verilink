@@ -165,10 +165,10 @@ Plan 8 **does not** redo RFC 9421 (already Plan 3). It replaces mock trust/key s
 
 ## Suggested PR split
 
-1. **Docs PR (this):** Plan 8 locked decisions + HANDOVER pointer
-2. **PR A:** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path integration + units
-3. **PR B:** WAL + flush interface + metrics + integration tests against CP sync fixtures
-4. **PR C (optional / if blocked):** control-plane decision batch ingest HTTP route wiring to existing `decision_*` tables — only if not already present when PR B starts
+1. **Docs PR (#17):** Plan 8 locked decisions + HANDOVER pointer — **merged**
+2. **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **merged**
+3. **PR B (#20):** WAL + flush interface + metrics + integration tests — **merged**
+4. **PR C (#21):** control-plane `POST /v1/decisions/batch` + HTTP flush transport — **merged**
 
 ---
 
