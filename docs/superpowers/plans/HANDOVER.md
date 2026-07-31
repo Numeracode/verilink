@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-07-31  
-> **Repo HEAD:** `main` @ Plan 8 PR B (#20) merged  
-> **Status:** Plans 1–8 PR A+B done. Plan 8 PR C (decision ingest) in flight.  
-> **Next session:** Land Plan 8 PR C → dashboard (design §13 step 13)
+> **Repo HEAD:** `main` @ Plan 8 PR C (#21) merged  
+> **Status:** Plans 1–8 done (A+B+C).  
+> **Next session:** Dashboard (design §13 step 13)
 
 ---
 
@@ -76,13 +76,13 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 8 — Go edge hardening — PR C IN FLIGHT
+## Plan 8 — Go edge hardening — DONE
 
 - Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` (merged PR #17)
 - Design: §4.5 + §4.7 + §13 step 12
 - **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **merged**
 - **PR B (#20):** decision WAL + flush interface + metrics — **merged**
-- **PR C:** control-plane `POST /v1/decisions/batch` + HTTP flush transport — **in progress** (`feat/go-edge-hardening-pr-c`)
+- **PR C (#21):** control-plane `POST /v1/decisions/batch` + HTTP flush transport — **merged**
 - **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state
 
 ### What’s after Plan 8 (§13)
