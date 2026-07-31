@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,13 @@ const (
 	maxSSEEventBytes = 1 << 20          // 1 MiB assembled data
 )
 
+var (
+	errSSEShutdown    = errors.New("shutdown")
+	errSSEBacklog     = errors.New("recovered from 429")
+	errSSEGone        = errors.New("recovered from 410")
+	errSSEUnavailable = errors.New("sse unavailable")
+)
+
 // SyncRunner bootstraps from disk/CP snapshot and maintains the SSE sync loop.
 type SyncRunner struct {
 	Client       *ControlPlaneClient
@@ -30,6 +38,8 @@ type SyncRunner struct {
 	SnapshotPath string
 	Logger       *log.Logger
 	OnReachable  func(bool)
+	Metrics      *Metrics
+	DecisionWAL  *DecisionWAL
 
 	persistEveryEvents  int
 	persistEvery        time.Duration
@@ -55,6 +65,20 @@ func WithOnReachable(fn func(bool)) SyncRunnerOption {
 	}
 }
 
+// WithMetrics attaches edge metrics (reconnect counters, store gauges).
+func WithMetrics(m *Metrics) SyncRunnerOption {
+	return func(r *SyncRunner) {
+		r.Metrics = m
+	}
+}
+
+// WithDecisionWAL wires policy no-drop updates into the decision WAL (not the request path).
+func WithDecisionWAL(w *DecisionWAL) SyncRunnerOption {
+	return func(r *SyncRunner) {
+		r.DecisionWAL = w
+	}
+}
+
 // NewSyncRunner builds a runner. SnapshotPath may be empty to skip disk I/O.
 func NewSyncRunner(client *ControlPlaneClient, store *Store, snapshotPath string, opts ...SyncRunnerOption) *SyncRunner {
 	r := &SyncRunner{
@@ -77,11 +101,23 @@ func (r *SyncRunner) setReachable(ok bool) {
 	}
 }
 
+func (r *SyncRunner) syncWALPolicy() {
+	if r == nil || r.DecisionWAL == nil || r.Store == nil {
+		return
+	}
+	noDrop := false
+	if pol := r.Store.ActivePolicy(); pol != nil {
+		noDrop = pol.NoDropDecisions
+	}
+	r.DecisionWAL.SetNoDrop(noDrop)
+}
+
 // Bootstrap loads disk snapshot if present, else fetches from control plane.
 func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 	if r.SnapshotPath != "" {
 		if snap, err := LoadSnapshot(r.SnapshotPath); err == nil {
 			ApplySnapshot(r.Store, snap)
+			r.syncWALPolicy()
 			r.lastPersist = time.Now()
 			r.logf("loaded disk snapshot hw=%d", r.Store.HighWater())
 			return nil
@@ -94,6 +130,7 @@ func (r *SyncRunner) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("fetch snapshot: %w", err)
 	}
 	ApplySnapshot(r.Store, snap)
+	r.syncWALPolicy()
 	if err := r.persist(r.Store.SnapshotForPersist()); err != nil {
 		r.logf("persist after bootstrap: %v", err)
 	}
@@ -116,6 +153,10 @@ func (r *SyncRunner) Run(ctx context.Context) error {
 		}
 		retryMs, err := r.runSession(ctx)
 		r.setReachable(false)
+		if r.Metrics != nil {
+			r.Metrics.ObserveStore(r.Store)
+			r.Metrics.IncSyncReconnect(reconnectReason(err))
+		}
 		// Only adopt server-provided retry:; otherwise preserve exponential backoff.
 		if retryMs > 0 {
 			backoffMs = minInt(retryMs, maxBackoffMs)
@@ -164,9 +205,12 @@ func (r *SyncRunner) runSession(ctx context.Context) (retryMs int, err error) {
 		if err := r.recoverSnapshot(ctx); err != nil {
 			return 0, err
 		}
-		return 0, fmt.Errorf("recovered from %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return 0, errSSEBacklog
+		}
+		return 0, errSSEGone
 	case http.StatusServiceUnavailable:
-		return 0, fmt.Errorf("sse unavailable: %d", resp.StatusCode)
+		return 0, fmt.Errorf("%w: %d", errSSEUnavailable, resp.StatusCode)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return 0, fmt.Errorf("sse status %d: %s", resp.StatusCode, truncate(string(body), 200))
@@ -183,6 +227,7 @@ func (r *SyncRunner) recoverSnapshot(ctx context.Context) error {
 		return err
 	}
 	ApplySnapshot(r.Store, snap)
+	r.syncWALPolicy()
 	return r.persist(r.Store.SnapshotForPersist())
 }
 
@@ -268,7 +313,7 @@ func (f *sseFrame) flush() error {
 	case "":
 		return nil
 	case "shutdown":
-		return fmt.Errorf("shutdown")
+		return errSSEShutdown
 	case "cursor":
 		hw, perr := parseID(f.idStr)
 		if perr != nil {
@@ -285,6 +330,9 @@ func (f *sseFrame) flush() error {
 		}
 		if err := ApplyEvent(f.runner.Store, hw, f.eventName, json.RawMessage(data)); err != nil {
 			return fmt.Errorf("apply %s id=%d: %w", f.eventName, hw, err)
+		}
+		if f.eventName == "policy.replace" {
+			f.runner.syncWALPolicy()
 		}
 		f.runner.durableSincePersist++
 		f.runner.maybePersist()
@@ -412,4 +460,23 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func reconnectReason(err error) string {
+	switch {
+	case err == nil, errors.Is(err, io.EOF):
+		return "eof"
+	case errors.Is(err, errSSEShutdown):
+		return "shutdown"
+	case errors.Is(err, errSSEBacklog):
+		return "backlog"
+	case errors.Is(err, errSSEGone):
+		return "gone"
+	case errors.Is(err, errSSEUnavailable):
+		return "unavailable"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "canceled"
+	default:
+		return "error"
+	}
 }
