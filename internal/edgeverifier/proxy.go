@@ -246,17 +246,18 @@ func (p *EdgeVerifierProxy) recordDecision(r *http.Request, d Decision) {
 	if d.DecidedAt.IsZero() {
 		d.DecidedAt = time.Now().UTC()
 	}
+	// Policy can enable no-drop; local CLI/env override stays sticky inside DecisionWAL.
+	if p.snapshot != nil {
+		if active := p.snapshot.ActivePolicy(); active != nil {
+			p.wal.SetNoDrop(active.NoDropDecisions)
+		}
+	}
 	if err := p.wal.Append(d); err != nil {
 		if errors.Is(err, ErrWALFull) {
 			log.Printf("WAL_FULL: action=%s fingerprint=%s", d.Action, d.Fingerprint)
 			return
 		}
 		log.Printf("WAL_APPEND: %v", err)
-	}
-	if pol := p.snapshot; pol != nil {
-		if active := pol.ActivePolicy(); active != nil {
-			p.wal.SetNoDrop(active.NoDropDecisions)
-		}
 	}
 }
 

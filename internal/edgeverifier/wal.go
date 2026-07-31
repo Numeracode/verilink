@@ -1,6 +1,7 @@
 package edgeverifier
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ const (
 	defaultWALMaxBytes    = 256 << 20 // 256 MiB
 	defaultNoDropWALBytes = 8 << 30   // 8 GiB
 	defaultOutageSeconds  = 900
-	walSchemaVersion      = 1
+	walSchemaVersion      = 2 // JSONL append-only (v1 was full-rewrite envelope)
+	walSyncEveryN         = 32
+	walMaxLineBytes       = 1 << 20 // 1 MiB per JSONL line
 )
 
 // ErrWALFull is returned by Append when no_drop_decisions is set and the WAL is full.
@@ -34,15 +37,19 @@ type Decision struct {
 
 // DecisionWAL is a bounded, append-only local decision log with drop-oldest or no-drop.
 type DecisionWAL struct {
-	mu       sync.Mutex
-	path     string
-	maxBytes int64
-	noDrop   bool
-	metrics  *Metrics
+	mu           sync.Mutex
+	path         string
+	maxBytes     int64
+	forcedNoDrop bool // sticky local override (CLI/env); never cleared by policy
+	noDrop       bool // effective: forcedNoDrop || policy
+	metrics      *Metrics
 
-	nextSeq int64
-	entries []walEntry
-	bytes   int64
+	nextSeq    int64
+	entries    []walEntry
+	bytes      int64
+	file       *os.File
+	sinceSync  int
+	staleBytes int64 // bytes logically removed but still on disk until compact
 }
 
 type walEntry struct {
@@ -50,11 +57,26 @@ type walEntry struct {
 	size int64
 }
 
+type walLine struct {
+	Type          string    `json:"t"` // meta|dec|ack
+	SchemaVersion int       `json:"schema_version,omitempty"`
+	NextSeq       int64     `json:"next_seq,omitempty"`
+	Through       int64     `json:"through,omitempty"`
+	WalSeq        int64     `json:"wal_seq,omitempty"`
+	Fingerprint   string    `json:"fingerprint,omitempty"`
+	PrincipalID   string    `json:"principal_id,omitempty"`
+	Score         int       `json:"score,omitempty"`
+	Blacklisted   bool      `json:"blacklisted,omitempty"`
+	ScoreReason   string    `json:"score_reason,omitempty"`
+	Action        string    `json:"action,omitempty"`
+	DecidedAt     time.Time `json:"decided_at,omitempty"`
+}
+
 // WALConfig configures DecisionWAL.
 type WALConfig struct {
 	Path     string
 	MaxBytes int64
-	NoDrop   bool
+	NoDrop   bool // sticky local override when true
 	Metrics  *Metrics
 }
 
@@ -69,14 +91,15 @@ func NewDecisionWAL(cfg WALConfig) (*DecisionWAL, error) {
 		}
 	}
 	w := &DecisionWAL{
-		path:     cfg.Path,
-		maxBytes: maxBytes,
-		noDrop:   cfg.NoDrop,
-		metrics:  cfg.Metrics,
-		nextSeq:  1,
+		path:         cfg.Path,
+		maxBytes:     maxBytes,
+		forcedNoDrop: cfg.NoDrop,
+		noDrop:       cfg.NoDrop,
+		metrics:      cfg.Metrics,
+		nextSeq:      1,
 	}
 	if cfg.Path != "" {
-		if err := w.load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := w.openAndLoad(); err != nil {
 			return nil, err
 		}
 	}
@@ -84,14 +107,24 @@ func NewDecisionWAL(cfg WALConfig) (*DecisionWAL, error) {
 	return w, nil
 }
 
-// SetNoDrop updates the no-drop policy (e.g. from synced tenant policy).
+// SetNoDrop merges tenant policy into effective no-drop without clearing a local override.
 func (w *DecisionWAL) SetNoDrop(v bool) {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
-	w.noDrop = v
+	w.noDrop = w.forcedNoDrop || v
 	w.mu.Unlock()
+}
+
+// ForcedNoDrop reports whether the local CLI/env override is set.
+func (w *DecisionWAL) ForcedNoDrop() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.forcedNoDrop
 }
 
 // NoDrop reports whether writers block when full.
@@ -156,22 +189,35 @@ func (w *DecisionWAL) Append(d Decision) error {
 	size := estimateDecisionBytes(d)
 	for w.bytes+size > w.maxBytes && len(w.entries) > 0 {
 		if w.noDrop {
-			w.nextSeq-- // roll back seq assignment
+			w.nextSeq--
 			return ErrWALFull
 		}
 		w.dropOldestLocked()
 	}
-	if w.bytes+size > w.maxBytes {
-		if w.noDrop {
-			w.nextSeq--
-			return ErrWALFull
-		}
-		// single record larger than max — still accept after emptying
+	if w.bytes+size > w.maxBytes && w.noDrop {
+		w.nextSeq--
+		return ErrWALFull
+	}
+
+	line := walLine{
+		Type:        "dec",
+		WalSeq:      d.WalSeq,
+		Fingerprint: d.Fingerprint,
+		PrincipalID: d.PrincipalID,
+		Score:       d.Score,
+		Blacklisted: d.Blacklisted,
+		ScoreReason: d.ScoreReason,
+		Action:      d.Action,
+		DecidedAt:   d.DecidedAt,
+	}
+	if err := w.writeLineLocked(line, false); err != nil {
+		w.nextSeq--
+		return err
 	}
 	w.entries = append(w.entries, walEntry{rec: d, size: size})
 	w.bytes += size
 	w.publishBytesLocked()
-	return w.persistLocked()
+	return w.maybeCompactLocked()
 }
 
 // Pending returns up to n oldest decisions (copy) without removing them.
@@ -199,26 +245,33 @@ func (w *DecisionWAL) AckThrough(seq int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	i := 0
+	var removed int64
 	for i < len(w.entries) && w.entries[i].rec.WalSeq <= seq {
-		w.bytes -= w.entries[i].size
+		removed += w.entries[i].size
 		i++
 	}
 	if i == 0 {
 		return
 	}
 	w.entries = append([]walEntry(nil), w.entries[i:]...)
+	w.bytes -= removed
 	if w.bytes < 0 {
 		w.bytes = 0
 	}
+	w.staleBytes += removed
+	_ = w.writeLineLocked(walLine{Type: "ack", Through: seq}, false)
 	w.publishBytesLocked()
-	_ = w.persistLocked()
+	_ = w.maybeCompactLocked()
 }
 
 func (w *DecisionWAL) dropOldestLocked() {
 	if len(w.entries) == 0 {
 		return
 	}
-	w.bytes -= w.entries[0].size
+	droppedSeq := w.entries[0].rec.WalSeq
+	removed := w.entries[0].size
+	w.bytes -= removed
+	w.staleBytes += removed
 	w.entries = w.entries[1:]
 	if w.bytes < 0 {
 		w.bytes = 0
@@ -226,6 +279,8 @@ func (w *DecisionWAL) dropOldestLocked() {
 	if w.metrics != nil {
 		w.metrics.DecisionsDropped.Add(1)
 	}
+	// Persist drop via ack watermark so reloads skip the discarded seq.
+	_ = w.writeLineLocked(walLine{Type: "ack", Through: droppedSeq}, true)
 }
 
 func (w *DecisionWAL) publishBytes() {
@@ -245,73 +300,190 @@ func estimateDecisionBytes(d Decision) int64 {
 	if err != nil {
 		return 256
 	}
-	return int64(len(b) + 1) // newline
+	return int64(len(b) + 1)
 }
 
-type walDiskEnvelope struct {
-	SchemaVersion int        `json:"schema_version"`
-	NextSeq       int64      `json:"next_seq"`
-	Decisions     []Decision `json:"decisions"`
-}
-
-func (w *DecisionWAL) load() error {
-	data, err := os.ReadFile(w.path)
-	if err != nil {
-		return err
-	}
-	var env walDiskEnvelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return fmt.Errorf("wal load: %w", err)
-	}
-	if env.SchemaVersion != walSchemaVersion {
-		return fmt.Errorf("unsupported wal schema_version %d", env.SchemaVersion)
-	}
-	w.entries = w.entries[:0]
-	w.bytes = 0
-	w.nextSeq = env.NextSeq
-	if w.nextSeq <= 0 {
-		w.nextSeq = 1
-	}
-	for _, d := range env.Decisions {
-		size := estimateDecisionBytes(d)
-		w.entries = append(w.entries, walEntry{rec: d, size: size})
-		w.bytes += size
-		if d.WalSeq >= w.nextSeq {
-			w.nextSeq = d.WalSeq + 1
-		}
-	}
-	return nil
-}
-
-func (w *DecisionWAL) persistLocked() error {
-	if w.path == "" {
-		return nil
-	}
-	env := walDiskEnvelope{
-		SchemaVersion: walSchemaVersion,
-		NextSeq:       w.nextSeq,
-		Decisions:     make([]Decision, len(w.entries)),
-	}
-	for i, e := range w.entries {
-		env.Decisions[i] = e.rec
-	}
-	data, err := json.Marshal(env)
-	if err != nil {
-		return err
-	}
+func (w *DecisionWAL) openAndLoad() error {
 	dir := filepath.Dir(w.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := w.path + ".tmp"
+	if err := w.loadStream(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return w.writeLineLocked(walLine{Type: "meta", SchemaVersion: walSchemaVersion, NextSeq: w.nextSeq}, true)
+	}
+	return nil
+}
+
+func (w *DecisionWAL) loadStream() error {
+	f, err := os.Open(w.path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), walMaxLineBytes)
+
+	pending := make(map[int64]Decision)
+	var order []int64
+	var ackThrough int64
+	var sawMeta bool
+
+	for sc.Scan() {
+		raw := sc.Bytes()
+		if len(raw) == 0 {
+			continue
+		}
+		var line walLine
+		if err := json.Unmarshal(raw, &line); err != nil {
+			return fmt.Errorf("wal load line: %w", err)
+		}
+		switch line.Type {
+		case "meta":
+			if line.SchemaVersion != 0 && line.SchemaVersion != walSchemaVersion {
+				return fmt.Errorf("unsupported wal schema_version %d", line.SchemaVersion)
+			}
+			sawMeta = true
+			if line.NextSeq > w.nextSeq {
+				w.nextSeq = line.NextSeq
+			}
+		case "dec":
+			d := Decision{
+				WalSeq:      line.WalSeq,
+				Fingerprint: line.Fingerprint,
+				PrincipalID: line.PrincipalID,
+				Score:       line.Score,
+				Blacklisted: line.Blacklisted,
+				ScoreReason: line.ScoreReason,
+				Action:      line.Action,
+				DecidedAt:   line.DecidedAt,
+			}
+			if _, ok := pending[d.WalSeq]; !ok {
+				order = append(order, d.WalSeq)
+			}
+			pending[d.WalSeq] = d
+			if d.WalSeq >= w.nextSeq {
+				w.nextSeq = d.WalSeq + 1
+			}
+		case "ack":
+			if line.Through > ackThrough {
+				ackThrough = line.Through
+			}
+		default:
+			// ignore unknown for forward-compat
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if !sawMeta && len(order) == 0 && ackThrough == 0 {
+		// empty / new file
+		return nil
+	}
+
+	w.entries = w.entries[:0]
+	w.bytes = 0
+	for _, seq := range order {
+		if seq <= ackThrough {
+			continue
+		}
+		d := pending[seq]
+		size := estimateDecisionBytes(d)
+		w.entries = append(w.entries, walEntry{rec: d, size: size})
+		w.bytes += size
+	}
+	w.staleBytes = 0
+	return nil
+}
+
+func (w *DecisionWAL) writeLineLocked(line walLine, forceSync bool) error {
+	if w.path == "" {
+		return nil
+	}
+	if w.file == nil {
+		return fmt.Errorf("wal file not open")
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if _, err := w.file.Write(data); err != nil {
+		return err
+	}
+	w.sinceSync++
+	if forceSync || w.sinceSync >= walSyncEveryN {
+		if err := w.file.Sync(); err != nil {
+			return err
+		}
+		w.sinceSync = 0
+	}
+	return nil
+}
+
+func (w *DecisionWAL) maybeCompactLocked() error {
+	if w.path == "" || w.file == nil {
+		return nil
+	}
+	// Compact when discarded on-disk bytes dominate live payload.
+	if w.staleBytes < 64<<10 && w.staleBytes < w.bytes {
+		return nil
+	}
+	if w.staleBytes < w.bytes/2 && w.staleBytes < 1<<20 {
+		return nil
+	}
+	return w.compactLocked()
+}
+
+func (w *DecisionWAL) compactLocked() error {
+	dir := filepath.Dir(w.path)
+	tmp := w.path + ".compact"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
+	write := func(line walLine) error {
+		b, err := json.Marshal(line)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(append(b, '\n'))
+		return err
+	}
+	if err := write(walLine{Type: "meta", SchemaVersion: walSchemaVersion, NextSeq: w.nextSeq}); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
+	}
+	for _, e := range w.entries {
+		d := e.rec
+		if err := write(walLine{
+			Type:        "dec",
+			WalSeq:      d.WalSeq,
+			Fingerprint: d.Fingerprint,
+			PrincipalID: d.PrincipalID,
+			Score:       d.Score,
+			Blacklisted: d.Blacklisted,
+			ScoreReason: d.ScoreReason,
+			Action:      d.Action,
+			DecidedAt:   d.DecidedAt,
+		}); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -322,11 +494,42 @@ func (w *DecisionWAL) persistLocked() error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	_ = w.file.Close()
+	w.file = nil
 	if err := os.Rename(tmp, w.path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	nf, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	w.file = nf
+	w.staleBytes = 0
+	w.sinceSync = 0
+	return nil
+}
+
+// Close flushes and closes the on-disk WAL handle.
+func (w *DecisionWAL) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Sync()
+	cerr := w.file.Close()
+	w.file = nil
+	if err != nil {
+		return err
+	}
+	return cerr
 }
 
 // NoDropWALMaxBytes applies the enterprise sizing floor (8 GiB) or an explicit override.

@@ -199,7 +199,7 @@ func mustStartSync(cfg edgeConfig, metrics *edgeverifier.Metrics, wal *edgeverif
 	}
 	bootCancel()
 	if pol := snapStore.ActivePolicy(); pol != nil && wal != nil {
-		wal.SetNoDrop(pol.NoDropDecisions || cfg.noDropDecisions)
+		wal.SetNoDrop(pol.NoDropDecisions)
 	}
 	log.Printf("Control-plane sync enabled against %s", cfg.controlPlaneURL)
 	return snapStore, runner, syncCtx, syncCancel

@@ -89,6 +89,9 @@ func TestWALFlushAckAndDiskRoundTrip(t *testing.T) {
 	if wal.Len() != 0 {
 		t.Fatalf("expected ack drain, len=%d", wal.Len())
 	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// persist empty + reload
 	wal2, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes, Metrics: m})
@@ -101,13 +104,85 @@ func TestWALFlushAckAndDiskRoundTrip(t *testing.T) {
 	if err := wal2.Append(Decision{Fingerprint: "c", Action: "deny", Score: 3, DecidedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := wal2.Close(); err != nil {
+		t.Fatal(err)
+	}
 	wal3, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer wal3.Close()
 	pending := wal3.Pending(10)
 	if len(pending) != 1 || pending[0].Fingerprint != "c" || pending[0].WalSeq < 1 {
 		t.Fatalf("pending=%+v", pending)
+	}
+}
+
+func TestWALForcedNoDropStickyAgainstPolicy(t *testing.T) {
+	wal, err := NewDecisionWAL(WALConfig{MaxBytes: 200, NoDrop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal.SetNoDrop(false) // policy tries to disable
+	if !wal.NoDrop() || !wal.ForcedNoDrop() {
+		t.Fatalf("forced no-drop must remain sticky: noDrop=%v forced=%v", wal.NoDrop(), wal.ForcedNoDrop())
+	}
+	var hitFull bool
+	for i := 0; i < 50; i++ {
+		err := wal.Append(Decision{Fingerprint: "fp", Action: "deny", Score: i, DecidedAt: time.Now().UTC()})
+		if errors.Is(err, ErrWALFull) {
+			hitFull = true
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !hitFull {
+		t.Fatal("expected ErrWALFull with sticky forced no-drop")
+	}
+}
+
+func TestWALAppendCostDoesNotScaleWithLength(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.wal")
+	wal, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	const warm = 200
+	const sample = 50
+	for i := 0; i < warm; i++ {
+		if err := wal.Append(Decision{Fingerprint: "warm", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	startSmall := time.Now()
+	for i := 0; i < sample; i++ {
+		if err := wal.Append(Decision{Fingerprint: "a", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	small := time.Since(startSmall)
+
+	for i := 0; i < warm*4; i++ {
+		if err := wal.Append(Decision{Fingerprint: "grow", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	startLarge := time.Now()
+	for i := 0; i < sample; i++ {
+		if err := wal.Append(Decision{Fingerprint: "b", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	large := time.Since(startLarge)
+
+	// Append path must stay roughly O(1); allow generous jitter for CI disks.
+	if large > small*20+50*time.Millisecond {
+		t.Fatalf("append latency appears to scale with WAL length: small=%s large=%s len=%d", small, large, wal.Len())
 	}
 }
 
