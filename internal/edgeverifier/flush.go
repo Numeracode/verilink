@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"time"
 )
 
@@ -285,14 +285,14 @@ func (w *FlushWorker) logf(format string, args ...any) {
 	}
 }
 
-// randInt63n returns a non-negative pseudo-random int64 in [0,n) using crypto/rand.
+// randInt63n returns a non-negative int64 in [0,n) using crypto/rand.
 func randInt63n(n int64) int64 {
 	if n <= 0 {
 		return 0
 	}
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	v, err := rand.Int(rand.Reader, big.NewInt(n))
+	if err != nil {
 		return 0
 	}
-	return int64(binary.BigEndian.Uint64(b[:])>>1) % n
+	return v.Int64()
 }
