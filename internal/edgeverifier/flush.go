@@ -2,7 +2,6 @@ package edgeverifier
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -88,10 +87,13 @@ func NewFlushWorker(wal *DecisionWAL, transport FlushTransport, opts ...FlushWor
 	for _, o := range opts {
 		o(w)
 	}
+	if w.interval <= 0 {
+		w.interval = 5 * time.Second
+	}
 	return w
 }
 
-// Run flushes until ctx is cancelled, then best-effort flushes remaining.
+// Run flushes until ctx is cancelled, then best-effort flushes all remaining.
 func (w *FlushWorker) Run(ctx context.Context) {
 	if w == nil || w.WAL == nil {
 		return
@@ -102,11 +104,30 @@ func (w *FlushWorker) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			_ = w.FlushOnce(flushCtx)
+			_ = w.FlushAll(flushCtx)
 			cancel()
 			return
 		case <-ticker.C:
 			_ = w.FlushOnce(ctx)
+		}
+	}
+}
+
+// FlushAll drains pending decisions in batches until empty or ctx ends.
+func (w *FlushWorker) FlushAll(ctx context.Context) error {
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if w.WAL.Len() == 0 {
+			return nil
+		}
+		before := w.WAL.Len()
+		if err := w.FlushOnce(ctx); err != nil {
+			return err
+		}
+		if w.WAL.Len() >= before {
+			return fmt.Errorf("flush made no progress (%d pending)", before)
 		}
 	}
 }
@@ -128,20 +149,21 @@ func (w *FlushWorker) FlushOnce(ctx context.Context) error {
 		w.logf("flush failed: %v", err)
 		return err
 	}
-	w.WAL.AckThrough(batch.LastWalSeq)
+	if err := w.WAL.AckThrough(batch.LastWalSeq); err != nil {
+		w.logf("ack after flush failed: %v", err)
+		return err
+	}
 	return nil
 }
 
 func buildFlushBatch(decisions []Decision) (FlushBatch, error) {
-	id, err := newBatchID()
-	if err != nil {
-		return FlushBatch{}, err
-	}
 	payload, err := json.Marshal(decisions)
 	if err != nil {
 		return FlushBatch{}, err
 	}
 	sum := sha256.Sum256(payload)
+	// Deterministic batch id from payload hash so retries dedupe on the same content.
+	id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 	return FlushBatch{
 		BatchID:     id,
 		FirstWalSeq: decisions[0].WalSeq,
@@ -149,17 +171,6 @@ func buildFlushBatch(decisions []Decision) (FlushBatch, error) {
 		PayloadHash: hex.EncodeToString(sum[:]),
 		Decisions:   decisions,
 	}, nil
-}
-
-func newBatchID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("batch id: %w", err)
-	}
-	// UUID-ish: version 4 / RFC 4122 variant bits
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 func (w *FlushWorker) logf(format string, args ...any) {

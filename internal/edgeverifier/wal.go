@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -186,19 +188,6 @@ func (w *DecisionWAL) Append(d Decision) error {
 
 	d.WalSeq = w.nextSeq
 	w.nextSeq++
-	size := estimateDecisionBytes(d)
-	for w.bytes+size > w.maxBytes && len(w.entries) > 0 {
-		if w.noDrop {
-			w.nextSeq--
-			return ErrWALFull
-		}
-		w.dropOldestLocked()
-	}
-	if w.bytes+size > w.maxBytes && w.noDrop {
-		w.nextSeq--
-		return ErrWALFull
-	}
-
 	line := walLine{
 		Type:        "dec",
 		WalSeq:      d.WalSeq,
@@ -210,7 +199,34 @@ func (w *DecisionWAL) Append(d Decision) error {
 		Action:      d.Action,
 		DecidedAt:   d.DecidedAt,
 	}
-	if err := w.writeLineLocked(line, false); err != nil {
+	encoded, err := json.Marshal(line)
+	if err != nil {
+		w.nextSeq--
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if len(encoded) > walMaxLineBytes {
+		w.nextSeq--
+		return fmt.Errorf("wal line exceeds %d bytes", walMaxLineBytes)
+	}
+	size := int64(len(encoded))
+
+	for w.bytes+size > w.maxBytes && len(w.entries) > 0 {
+		if w.noDrop {
+			w.nextSeq--
+			return ErrWALFull
+		}
+		if err := w.dropOldestLocked(); err != nil {
+			w.nextSeq--
+			return err
+		}
+	}
+	if w.bytes+size > w.maxBytes {
+		w.nextSeq--
+		return ErrWALFull
+	}
+
+	if err := w.writeBytesLocked(encoded, false); err != nil {
 		w.nextSeq--
 		return err
 	}
@@ -238,9 +254,9 @@ func (w *DecisionWAL) Pending(n int) []Decision {
 }
 
 // AckThrough removes decisions with wal_seq <= seq after a successful flush.
-func (w *DecisionWAL) AckThrough(seq int64) {
+func (w *DecisionWAL) AckThrough(seq int64) error {
 	if w == nil || seq <= 0 {
-		return
+		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -251,7 +267,7 @@ func (w *DecisionWAL) AckThrough(seq int64) {
 		i++
 	}
 	if i == 0 {
-		return
+		return nil
 	}
 	w.entries = append([]walEntry(nil), w.entries[i:]...)
 	w.bytes -= removed
@@ -259,14 +275,16 @@ func (w *DecisionWAL) AckThrough(seq int64) {
 		w.bytes = 0
 	}
 	w.staleBytes += removed
-	_ = w.writeLineLocked(walLine{Type: "ack", Through: seq}, false)
+	if err := w.writeLineLocked(walLine{Type: "ack", Through: seq}, false); err != nil {
+		return err
+	}
 	w.publishBytesLocked()
-	_ = w.maybeCompactLocked()
+	return w.maybeCompactLocked()
 }
 
-func (w *DecisionWAL) dropOldestLocked() {
+func (w *DecisionWAL) dropOldestLocked() error {
 	if len(w.entries) == 0 {
-		return
+		return nil
 	}
 	droppedSeq := w.entries[0].rec.WalSeq
 	removed := w.entries[0].size
@@ -279,8 +297,8 @@ func (w *DecisionWAL) dropOldestLocked() {
 	if w.metrics != nil {
 		w.metrics.DecisionsDropped.Add(1)
 	}
-	// Persist drop via ack watermark so reloads skip the discarded seq.
-	_ = w.writeLineLocked(walLine{Type: "ack", Through: droppedSeq}, true)
+	// Persist drop via ack watermark (batched fsync — not per-drop force sync).
+	return w.writeLineLocked(walLine{Type: "ack", Through: droppedSeq}, false)
 }
 
 func (w *DecisionWAL) publishBytes() {
@@ -293,14 +311,6 @@ func (w *DecisionWAL) publishBytesLocked() {
 	if w.metrics != nil {
 		w.metrics.WALBytes.Store(w.bytes)
 	}
-}
-
-func estimateDecisionBytes(d Decision) int64 {
-	b, err := json.Marshal(d)
-	if err != nil {
-		return 256
-	}
-	return int64(len(b) + 1)
 }
 
 func (w *DecisionWAL) openAndLoad() error {
@@ -323,6 +333,15 @@ func (w *DecisionWAL) openAndLoad() error {
 	if info.Size() == 0 {
 		return w.writeLineLocked(walLine{Type: "meta", SchemaVersion: walSchemaVersion, NextSeq: w.nextSeq}, true)
 	}
+	// Enforce capacity after reload once the file handle is open.
+	for w.bytes > w.maxBytes && len(w.entries) > 0 {
+		if w.noDrop {
+			break
+		}
+		if err := w.dropOldestLocked(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -340,6 +359,7 @@ func (w *DecisionWAL) loadStream() error {
 	var order []int64
 	var ackThrough int64
 	var sawMeta bool
+	var tornTail error
 
 	for sc.Scan() {
 		raw := sc.Bytes()
@@ -348,7 +368,16 @@ func (w *DecisionWAL) loadStream() error {
 		}
 		var line walLine
 		if err := json.Unmarshal(raw, &line); err != nil {
-			return fmt.Errorf("wal load line: %w", err)
+			// Defer: if this is the final line, treat as crash-torn tail.
+			if tornTail != nil {
+				return fmt.Errorf("wal load line: %w", tornTail)
+			}
+			tornTail = err
+			continue
+		}
+		if tornTail != nil {
+			// A later valid line means the previous corrupt line was not a torn tail.
+			return fmt.Errorf("wal load line: %w", tornTail)
 		}
 		switch line.Type {
 		case "meta":
@@ -388,8 +417,10 @@ func (w *DecisionWAL) loadStream() error {
 	if err := sc.Err(); err != nil {
 		return err
 	}
+	if tornTail != nil {
+		log.Printf("edgesync: ignoring torn trailing WAL line on recovery: %v", tornTail)
+	}
 	if !sawMeta && len(order) == 0 && ackThrough == 0 {
-		// empty / new file
 		return nil
 	}
 
@@ -412,14 +443,24 @@ func (w *DecisionWAL) writeLineLocked(line walLine, forceSync bool) error {
 	if w.path == "" {
 		return nil
 	}
-	if w.file == nil {
-		return fmt.Errorf("wal file not open")
-	}
 	data, err := json.Marshal(line)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
+	if len(data) > walMaxLineBytes {
+		return fmt.Errorf("wal line exceeds %d bytes", walMaxLineBytes)
+	}
+	return w.writeBytesLocked(data, forceSync)
+}
+
+func (w *DecisionWAL) writeBytesLocked(data []byte, forceSync bool) error {
+	if w.path == "" {
+		return nil
+	}
+	if w.file == nil {
+		return fmt.Errorf("wal file not open")
+	}
 	if _, err := w.file.Write(data); err != nil {
 		return err
 	}
@@ -437,11 +478,11 @@ func (w *DecisionWAL) maybeCompactLocked() error {
 	if w.path == "" || w.file == nil {
 		return nil
 	}
-	// Compact when discarded on-disk bytes dominate live payload.
-	if w.staleBytes < 64<<10 && w.staleBytes < w.bytes {
+	// Compact when discarded on-disk bytes are at least half of live bytes and ≥1 MiB.
+	if w.staleBytes < 1<<20 {
 		return nil
 	}
-	if w.staleBytes < w.bytes/2 && w.staleBytes < 1<<20 {
+	if w.bytes > 0 && w.staleBytes < w.bytes/2 {
 		return nil
 	}
 	return w.compactLocked()
@@ -459,7 +500,11 @@ func (w *DecisionWAL) compactLocked() error {
 		if err != nil {
 			return err
 		}
-		_, err = f.Write(append(b, '\n'))
+		b = append(b, '\n')
+		if len(b) > walMaxLineBytes {
+			return fmt.Errorf("wal line exceeds %d bytes", walMaxLineBytes)
+		}
+		_, err = f.Write(b)
 		return err
 	}
 	if err := write(walLine{Type: "meta", SchemaVersion: walSchemaVersion, NextSeq: w.nextSeq}); err != nil {
@@ -494,13 +539,24 @@ func (w *DecisionWAL) compactLocked() error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	_ = w.file.Close()
+
+	prev := w.file
+	_ = prev.Close()
 	w.file = nil
 	if err := os.Rename(tmp, w.path); err != nil {
 		_ = os.Remove(tmp)
+		// Re-open previous path so Append does not permanently disable the WAL.
+		nf, oerr := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if oerr == nil {
+			w.file = nf
+		}
 		return err
 	}
 	if err := syncDir(dir); err != nil {
+		nf, oerr := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if oerr == nil {
+			w.file = nf
+		}
 		return err
 	}
 	nf, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
@@ -511,6 +567,14 @@ func (w *DecisionWAL) compactLocked() error {
 	w.staleBytes = 0
 	w.sinceSync = 0
 	return nil
+}
+
+func estimateDecisionBytes(d Decision) int64 {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return 256
+	}
+	return int64(len(b) + 1)
 }
 
 // Close flushes and closes the on-disk WAL handle.
@@ -548,7 +612,7 @@ func SizedNoDropWALMaxBytes(p99BytesPerSec float64, outageSeconds int) int64 {
 	if p99BytesPerSec < 0 {
 		p99BytesPerSec = 0
 	}
-	calc := int64(p99BytesPerSec*float64(outageSeconds)*1.5 + 0.999999) // ceil
+	calc := int64(math.Ceil(p99BytesPerSec * float64(outageSeconds) * 1.5))
 	if calc < defaultNoDropWALBytes {
 		return defaultNoDropWALBytes
 	}

@@ -208,9 +208,7 @@ func (p *EdgeVerifierProxy) annotateTrust(w http.ResponseWriter, r *http.Request
 			return true, "unknown-key", "", 0, false
 		}
 		principalID = key.PrincipalID
-		allow, score, scoreReason := AllowByScore(p.snapshot, key.PrincipalID)
-		entry, _ := p.snapshot.LookupScore(key.PrincipalID)
-		blacklisted = entry.Blacklisted
+		allow, score, scoreReason, blacklisted := AllowByScore(p.snapshot, key.PrincipalID)
 		w.Header().Set("X-Verilink-Trust-Score", fmt.Sprintf("%d", score))
 		w.Header().Set("X-Verilink-Principal", key.PrincipalID)
 		if scoreReason != "" {

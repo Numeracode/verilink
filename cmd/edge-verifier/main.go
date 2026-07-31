@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,6 +46,7 @@ func main() {
 		syncCtx     context.Context
 		syncRunner  *edgeverifier.SyncRunner
 		flushCancel context.CancelFunc
+		bg          sync.WaitGroup
 	)
 	if cfg.syncEnabled {
 		snapStore, syncRunner, syncCtx, syncCancel = mustStartSync(cfg, metrics, decisionWAL)
@@ -62,12 +64,18 @@ func main() {
 		var flushCtx context.Context
 		flushCtx, flushCancel = context.WithCancel(context.Background())
 		worker := edgeverifier.NewFlushWorker(decisionWAL, &edgeverifier.StubTransport{Logger: log.Default()})
-		go worker.Run(flushCtx)
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			worker.Run(flushCtx)
+		}()
 	}
 
 	if syncRunner != nil {
 		syncRunner.OnReachable = proxy.SetSyncReachable
+		bg.Add(1)
 		go func() {
+			defer bg.Done()
 			if err := syncRunner.Run(syncCtx); err != nil && syncCtx.Err() == nil {
 				log.Printf("sync runner stopped: %v", err)
 			}
@@ -103,6 +111,10 @@ func main() {
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+	bg.Wait()
+	if decisionWAL != nil {
+		_ = decisionWAL.Close()
 	}
 }
 

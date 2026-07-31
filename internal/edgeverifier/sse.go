@@ -24,6 +24,13 @@ const (
 	maxSSEEventBytes = 1 << 20          // 1 MiB assembled data
 )
 
+var (
+	errSSEShutdown    = errors.New("shutdown")
+	errSSEBacklog     = errors.New("recovered from 429")
+	errSSEGone        = errors.New("recovered from 410")
+	errSSEUnavailable = errors.New("sse unavailable")
+)
+
 // SyncRunner bootstraps from disk/CP snapshot and maintains the SSE sync loop.
 type SyncRunner struct {
 	Client       *ControlPlaneClient
@@ -177,9 +184,12 @@ func (r *SyncRunner) runSession(ctx context.Context) (retryMs int, err error) {
 		if err := r.recoverSnapshot(ctx); err != nil {
 			return 0, err
 		}
-		return 0, fmt.Errorf("recovered from %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return 0, errSSEBacklog
+		}
+		return 0, errSSEGone
 	case http.StatusServiceUnavailable:
-		return 0, fmt.Errorf("sse unavailable: %d", resp.StatusCode)
+		return 0, fmt.Errorf("%w: %d", errSSEUnavailable, resp.StatusCode)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return 0, fmt.Errorf("sse status %d: %s", resp.StatusCode, truncate(string(body), 200))
@@ -281,7 +291,7 @@ func (f *sseFrame) flush() error {
 	case "":
 		return nil
 	case "shutdown":
-		return fmt.Errorf("shutdown")
+		return errSSEShutdown
 	case "cursor":
 		hw, perr := parseID(f.idStr)
 		if perr != nil {
@@ -428,18 +438,16 @@ func minInt(a, b int) int {
 }
 
 func reconnectReason(err error) string {
-	if err == nil {
-		return "eof"
-	}
-	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "shutdown"):
+	case err == nil, errors.Is(err, io.EOF):
+		return "eof"
+	case errors.Is(err, errSSEShutdown):
 		return "shutdown"
-	case strings.Contains(msg, "recovered from 429"):
+	case errors.Is(err, errSSEBacklog):
 		return "backlog"
-	case strings.Contains(msg, "recovered from 410"):
+	case errors.Is(err, errSSEGone):
 		return "gone"
-	case strings.Contains(msg, "unavailable"):
+	case errors.Is(err, errSSEUnavailable):
 		return "unavailable"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "canceled"

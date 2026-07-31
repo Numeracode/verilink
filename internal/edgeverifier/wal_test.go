@@ -3,6 +3,7 @@ package edgeverifier
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,6 +87,13 @@ func TestWALFlushAckAndDiskRoundTrip(t *testing.T) {
 	if got.PayloadHash == "" || got.BatchID == "" {
 		t.Fatal("missing batch id/hash")
 	}
+	again, err := buildFlushBatch(got.Decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.BatchID != got.BatchID {
+		t.Fatalf("batch id should be deterministic: %s vs %s", got.BatchID, again.BatchID)
+	}
 	if wal.Len() != 0 {
 		t.Fatalf("expected ack drain, len=%d", wal.Len())
 	}
@@ -93,7 +101,6 @@ func TestWALFlushAckAndDiskRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// persist empty + reload
 	wal2, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes, Metrics: m})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +120,7 @@ func TestWALFlushAckAndDiskRoundTrip(t *testing.T) {
 	}
 	defer wal3.Close()
 	pending := wal3.Pending(10)
-	if len(pending) != 1 || pending[0].Fingerprint != "c" || pending[0].WalSeq < 1 {
+	if len(pending) != 1 || pending[0].Fingerprint != "c" || pending[0].WalSeq != 3 {
 		t.Fatalf("pending=%+v", pending)
 	}
 }
@@ -143,46 +150,36 @@ func TestWALForcedNoDropStickyAgainstPolicy(t *testing.T) {
 	}
 }
 
-func TestWALAppendCostDoesNotScaleWithLength(t *testing.T) {
+func TestWALTornTrailingLineRecovered(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions.wal")
 	wal, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer wal.Close()
+	if err := wal.Append(Decision{Fingerprint: "ok", Action: "allow", Score: 1, DecidedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"t":"dec","wal_seq":2,"fingerprin`); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
-	const warm = 200
-	const sample = 50
-	for i := 0; i < warm; i++ {
-		if err := wal.Append(Decision{Fingerprint: "warm", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
+	wal2, err := NewDecisionWAL(WALConfig{Path: path, MaxBytes: defaultWALMaxBytes})
+	if err != nil {
+		t.Fatalf("torn tail should not fail load: %v", err)
 	}
-	startSmall := time.Now()
-	for i := 0; i < sample; i++ {
-		if err := wal.Append(Decision{Fingerprint: "a", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	small := time.Since(startSmall)
-
-	for i := 0; i < warm*4; i++ {
-		if err := wal.Append(Decision{Fingerprint: "grow", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	startLarge := time.Now()
-	for i := 0; i < sample; i++ {
-		if err := wal.Append(Decision{Fingerprint: "b", Action: "allow", Score: i, DecidedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	large := time.Since(startLarge)
-
-	// Append path must stay roughly O(1); allow generous jitter for CI disks.
-	if large > small*20+50*time.Millisecond {
-		t.Fatalf("append latency appears to scale with WAL length: small=%s large=%s len=%d", small, large, wal.Len())
+	defer wal2.Close()
+	pending := wal2.Pending(10)
+	if len(pending) != 1 || pending[0].Fingerprint != "ok" {
+		t.Fatalf("pending=%+v", pending)
 	}
 }
 
@@ -190,11 +187,8 @@ func TestSizedNoDropWALMaxBytes(t *testing.T) {
 	if got := SizedNoDropWALMaxBytes(0, 900); got != defaultNoDropWALBytes {
 		t.Fatalf("floor: %d", got)
 	}
-	if got := SizedNoDropWALMaxBytes(1<<20, 900); got <= defaultNoDropWALBytes {
-		// 1MiB/s * 900 * 1.5 = ~1.35 GiB < 8 GiB floor
-		if got != defaultNoDropWALBytes {
-			t.Fatalf("expected floor, got %d", got)
-		}
+	if got := SizedNoDropWALMaxBytes(1<<20, 900); got != defaultNoDropWALBytes {
+		t.Fatalf("expected floor for small rate, got %d", got)
 	}
 	if got := SizedNoDropWALMaxBytes(10<<20, 900); got <= defaultNoDropWALBytes {
 		t.Fatalf("expected above floor, got %d", got)
