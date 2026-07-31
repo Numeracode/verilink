@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
-> **Updated:** 2026-07-30  
-> **Repo HEAD:** `main` @ Plan 8 PR A + Proto local-plugins fix  
-> **Status:** Plans 1–8 PR A done. Plan 8 PR B in progress (`feat/go-edge-hardening-pr-b`).  
-> **Next session:** Land Plan 8 PR B (decision WAL + flush + metrics) → dashboard (design §13 step 13)
+> **Updated:** 2026-07-31  
+> **Repo HEAD:** `main` @ Plan 8 PR B (#20) merged  
+> **Status:** Plans 1–8 PR A+B done. Plan 8 PR C (decision ingest) in flight.  
+> **Next session:** Land Plan 8 PR C → dashboard (design §13 step 13)
 
 ---
 
@@ -14,7 +14,7 @@ VeriLink is past the “toolkit only” MVP. The monorepo now has:
 | Surface | Location | Notes |
 |---------|----------|--------|
 | Trust engine (gRPC) | `cmd/trust-engine`, `internal/trustengine` | `RunVeriRank`, `VerifyAttestation`, `GetFingerprint` |
-| Edge verifier | `cmd/edge-verifier`, `internal/edgeverifier` | RFC 9421 three-way outcomes + trust annotations |
+| Edge verifier | `cmd/edge-verifier`, `internal/edgeverifier` | RFC 9421 + SSE sync + decision WAL/flush |
 | Control plane (TS) | `control-plane/` | Express + Postgres; ingest E2E; score writer + recompute scheduler (Plan 6) |
 | Clients | `client/go`, `client/node` | Signing helpers present |
 | Proto | `proto/verilink/trust/v1/trust.proto` → `pkg/trustpb` | Buf pipeline in CI |
@@ -76,13 +76,13 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 8 — Go edge hardening — IN PROGRESS (PR B)
+## Plan 8 — Go edge hardening — PR C IN FLIGHT
 
 - Plan doc: `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` (merged PR #17)
 - Design: §4.5 + §4.7 + §13 step 12
 - **PR A (#18):** `internal/edgeverifier` snapshot + apply + SSE/cpclient + disk + proxy read-path — **merged**
-- **PR B:** decision WAL + flush interface (stub transport) + metrics — **in progress**
-- **PR C (optional):** control-plane decision batch ingest HTTP — if still missing when B lands
+- **PR B (#20):** decision WAL + flush interface + metrics — **merged**
+- **PR C:** control-plane `POST /v1/decisions/batch` + HTTP flush transport — **in progress** (`feat/go-edge-hardening-pr-c`)
 - **RFC 9421 already done** (Plan 3) — Plan 8 replaces mock trust/key sources with synced state
 
 ### What’s after Plan 8 (§13)

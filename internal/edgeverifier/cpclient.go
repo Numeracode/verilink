@@ -1,6 +1,7 @@
 package edgeverifier
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -73,6 +74,46 @@ func (c *ControlPlaneClient) FetchSnapshot(ctx context.Context) (*Snapshot, erro
 	}
 
 	return parseSnapshotJSON(data)
+}
+
+// FlushDecisionBatch POSTs /v1/decisions/batch (idempotent WAL flush).
+func (c *ControlPlaneClient) FlushDecisionBatch(ctx context.Context, batch FlushBatch) error {
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base()+"/v1/decisions/batch", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		return nil
+	}
+	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("decision batch: status %d: %s", resp.StatusCode, truncate(string(errBody), 200))
+}
+
+// HTTPFlushTransport delivers batches via ControlPlaneClient.
+type HTTPFlushTransport struct {
+	Client *ControlPlaneClient
+}
+
+// Flush implements FlushTransport.
+func (t *HTTPFlushTransport) Flush(ctx context.Context, batch FlushBatch) error {
+	if t == nil || t.Client == nil {
+		return fmt.Errorf("nil HTTP flush transport")
+	}
+	return t.Client.FlushDecisionBatch(ctx, batch)
 }
 
 type cpScoreWire struct {
