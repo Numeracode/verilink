@@ -7,21 +7,24 @@ process.env.API_KEY_HMAC_SECRET ||= 'test-hmac-secret-for-integration';
 
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import { setupTestDb, teardownTestDb, resetTestData } from '../../testutil/testDb.js';
 import { seedTenant, seedApiKey, authHeaders } from '../../testutil/seedData.js';
 import { startControlPlane, type ControlPlaneHarness } from '../../testutil/appHarness.js';
-import { shouldSample } from '../../domains/decision/decisionSample.js';
+import {
+  batchIDFromPayloadHash,
+  canonicalizeDecisionsJSON,
+  sha256Hex,
+  shouldSample,
+  type DecisionWire,
+} from '../../domains/decision/decisionSample.js';
 
-function buildBatch(decisions: Array<Record<string, unknown>>) {
-  const payload = JSON.stringify(decisions);
-  const sum = createHash('sha256').update(payload).digest('hex');
-  const id = `${sum.slice(0, 8)}-${sum.slice(8, 12)}-${sum.slice(12, 16)}-${sum.slice(16, 20)}-${sum.slice(20, 32)}`;
+function buildBatch(decisions: DecisionWire[]) {
+  const sum = sha256Hex(canonicalizeDecisionsJSON(decisions));
   return {
-    batch_id: id,
-    first_wal_seq: decisions[0].wal_seq as number,
-    last_wal_seq: decisions[decisions.length - 1].wal_seq as number,
+    batch_id: batchIDFromPayloadHash(sum),
+    first_wal_seq: decisions[0].wal_seq,
+    last_wal_seq: decisions[decisions.length - 1].wal_seq,
     payload_hash: sum,
     decisions,
   };
@@ -49,9 +52,28 @@ describe('decision batch ingest', () => {
   });
 
   it('shouldSample keeps all denies and rate-limits allows', () => {
-    assert.equal(shouldSample('deny', 1, 0), true);
-    assert.equal(shouldSample('allow', 1, 0), false);
-    assert.equal(shouldSample('allow', 1, 1), true);
+    const t = '2026-07-31T12:00:00.001Z';
+    assert.equal(shouldSample('deny', t, 0), true);
+    assert.equal(shouldSample('allow', t, 0), false);
+    assert.equal(shouldSample('allow', t, 1), true);
+  });
+
+  it('rejects payload_hash that does not match decisions', async () => {
+    const decidedAt = new Date().toISOString();
+    const batch = buildBatch([
+      {
+        wal_seq: 1,
+        fingerprint: 'fp-a',
+        action: 'deny',
+        decided_at: decidedAt,
+      },
+    ]);
+    const resp = await fetch(`${harness.url}/v1/decisions/batch`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...batch, payload_hash: '0'.repeat(64) }),
+    });
+    assert.equal(resp.status, 400);
   });
 
   it('accepts a batch and is idempotent on redelivery', async () => {
@@ -104,7 +126,7 @@ describe('decision batch ingest', () => {
     assert.equal(aggs.rows[0].n, 2);
   });
 
-  it('returns 409 when batch_id is reused with a different payload_hash', async () => {
+  it('returns 409 when stored batch_id hash conflicts with a redelivery', async () => {
     const decidedAt = new Date().toISOString();
     const batch = buildBatch([
       {
@@ -121,15 +143,39 @@ describe('decision batch ingest', () => {
     });
     assert.equal(first.status, 200);
 
-    const conflict = {
-      ...batch,
-      payload_hash: '0'.repeat(64),
-    };
+    // Simulate a corrupted / poisoned stored hash for the same batch_id.
+    await pool.query(`UPDATE decision_batches SET payload_hash = $1 WHERE batch_id = $2`, [
+      '1'.repeat(64),
+      batch.batch_id,
+    ]);
+
     const resp = await fetch(`${harness.url}/v1/decisions/batch`, {
       method: 'POST',
       headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
-      body: JSON.stringify(conflict),
+      body: JSON.stringify(batch),
     });
     assert.equal(resp.status, 409);
+  });
+
+  it('rejects non-RFC3339 decided_at', async () => {
+    const resp = await fetch(`${harness.url}/v1/decisions/batch`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batch_id: '11111111-1111-1111-1111-111111111111',
+        first_wal_seq: 1,
+        last_wal_seq: 1,
+        payload_hash: 'a'.repeat(64),
+        decisions: [
+          {
+            wal_seq: 1,
+            fingerprint: 'fp-a',
+            action: 'deny',
+            decided_at: '2026-07-31 12:00:00',
+          },
+        ],
+      }),
+    });
+    assert.equal(resp.status, 400);
   });
 });

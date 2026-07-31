@@ -1,19 +1,18 @@
 // control-plane/src/domains/decision/decisionIngestService.ts
+import type pg from 'pg';
 import { pool } from '../../db/client.js';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { resolveEdgeNodeForApiKey } from '../sync/syncCursorRepository.js';
-import { shouldSample } from './decisionSample.js';
+import {
+  assertRFC3339,
+  batchIDFromPayloadHash,
+  canonicalizeDecisionsJSON,
+  sha256Hex,
+  shouldSample,
+  type DecisionWire,
+} from './decisionSample.js';
 
-export interface DecisionWire {
-  wal_seq: number;
-  fingerprint: string;
-  principal_id?: string | null;
-  score?: number | null;
-  blacklisted?: boolean | null;
-  score_reason?: string | null;
-  action: 'allow' | 'deny' | 'passthrough';
-  decided_at: string;
-}
+export type { DecisionWire };
 
 export interface DecisionBatchWire {
   batch_id: string;
@@ -32,6 +31,7 @@ export interface IngestResult {
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 
 function assertBatchShape(body: DecisionBatchWire): void {
   if (!body || typeof body !== 'object') {
@@ -40,8 +40,8 @@ function assertBatchShape(body: DecisionBatchWire): void {
   if (!body.batch_id || !UUID_RE.test(body.batch_id)) {
     throw new AppError(CODES.BAD_REQUEST, 'batch_id must be a UUID');
   }
-  if (!body.payload_hash || typeof body.payload_hash !== 'string' || body.payload_hash.length < 16) {
-    throw new AppError(CODES.BAD_REQUEST, 'payload_hash required');
+  if (!body.payload_hash || !SHA256_HEX_RE.test(body.payload_hash)) {
+    throw new AppError(CODES.BAD_REQUEST, 'payload_hash must be a 64-char sha256 hex digest');
   }
   if (!Number.isInteger(body.first_wal_seq) || !Number.isInteger(body.last_wal_seq)) {
     throw new AppError(CODES.BAD_REQUEST, 'first_wal_seq/last_wal_seq must be integers');
@@ -70,9 +70,20 @@ function assertBatchShape(body: DecisionBatchWire): void {
     if (!Number.isInteger(d.wal_seq) || d.wal_seq < 1) {
       throw new AppError(CODES.BAD_REQUEST, 'wal_seq must be a positive integer');
     }
-    if (!d.decided_at || Number.isNaN(Date.parse(d.decided_at))) {
-      throw new AppError(CODES.BAD_REQUEST, 'decided_at must be an ISO timestamp');
+    try {
+      assertRFC3339(d.decided_at);
+    } catch {
+      throw new AppError(CODES.BAD_REQUEST, 'decided_at must be RFC3339 with timezone');
     }
+  }
+
+  const computedHash = sha256Hex(canonicalizeDecisionsJSON(body.decisions));
+  if (computedHash !== body.payload_hash.toLowerCase()) {
+    throw new AppError(CODES.BAD_REQUEST, 'payload_hash does not match decisions');
+  }
+  const expectedBatchID = batchIDFromPayloadHash(computedHash);
+  if (body.batch_id.toLowerCase() !== expectedBatchID) {
+    throw new AppError(CODES.BAD_REQUEST, 'batch_id does not match payload_hash');
   }
 }
 
@@ -94,6 +105,90 @@ function minuteBucket(iso: string): Date {
   return t;
 }
 
+type AggRow = {
+  bucket: string;
+  kind: string;
+  value: string;
+  action: string;
+  count: number;
+};
+
+function bumpAgg(
+  map: Map<string, AggRow>,
+  bucket: Date,
+  kind: string,
+  value: string,
+  action: string
+): void {
+  const b = bucket.toISOString();
+  const key = `${b}\0${kind}\0${value}\0${action}`;
+  const cur = map.get(key);
+  if (cur) {
+    cur.count += 1;
+    return;
+  }
+  map.set(key, { bucket: b, kind, value, action, count: 1 });
+}
+
+async function insertAggregates(
+  client: pg.PoolClient,
+  tenantId: string,
+  edgeNodeId: string,
+  rows: AggRow[]
+): Promise<void> {
+  if (rows.length === 0) return;
+  await client.query(
+    `INSERT INTO decision_aggregates
+       (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action, count)
+     SELECT $1, $2, x.bucket_minute::timestamptz, x.dimension_kind, x.dimension_value, x.action, x.cnt
+     FROM UNNEST($3::text[], $4::text[], $5::text[], $6::text[], $7::int[])
+       AS x(bucket_minute, dimension_kind, dimension_value, action, cnt)
+     ON CONFLICT (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action)
+     DO UPDATE SET count = decision_aggregates.count + EXCLUDED.count`,
+    [
+      tenantId,
+      edgeNodeId,
+      rows.map((r) => r.bucket),
+      rows.map((r) => r.kind),
+      rows.map((r) => r.value),
+      rows.map((r) => r.action),
+      rows.map((r) => r.count),
+    ]
+  );
+}
+
+async function insertSamples(
+  client: pg.PoolClient,
+  tenantId: string,
+  edgeNodeId: string,
+  samples: DecisionWire[]
+): Promise<void> {
+  if (samples.length === 0) return;
+  await client.query(
+    `INSERT INTO decision_samples
+       (tenant_id, edge_node_id, wal_seq, fingerprint, principal_id, score, blacklisted,
+        score_reason, action, decided_at)
+     SELECT $1, $2, x.wal_seq, x.fingerprint, NULLIF(x.principal_id, ''), x.score, x.blacklisted,
+            NULLIF(x.score_reason, ''), x.action, x.decided_at::timestamptz
+     FROM UNNEST(
+       $3::bigint[], $4::text[], $5::text[], $6::int[], $7::boolean[], $8::text[], $9::text[], $10::text[]
+     ) AS x(wal_seq, fingerprint, principal_id, score, blacklisted, score_reason, action, decided_at)
+     ON CONFLICT (edge_node_id, wal_seq) DO NOTHING`,
+    [
+      tenantId,
+      edgeNodeId,
+      samples.map((d) => d.wal_seq),
+      samples.map((d) => d.fingerprint),
+      samples.map((d) => d.principal_id ?? ''),
+      samples.map((d) => d.score ?? 0),
+      samples.map((d) => d.blacklisted ?? false),
+      samples.map((d) => d.score_reason ?? ''),
+      samples.map((d) => d.action),
+      samples.map((d) => d.decided_at),
+    ]
+  );
+}
+
 /**
  * Idempotent decision batch ingest.
  * Duplicate (edge_node_id, batch_id) with same payload_hash → ok duplicate.
@@ -105,6 +200,7 @@ export async function ingestDecisionBatch(opts: {
   body: DecisionBatchWire;
 }): Promise<IngestResult> {
   assertBatchShape(opts.body);
+  const payloadHash = opts.body.payload_hash.toLowerCase();
 
   const edgeNodeId = await resolveEdgeNodeForApiKey(opts.tenantId, opts.apiKeyId);
   const existing = await pool.query(
@@ -112,17 +208,32 @@ export async function ingestDecisionBatch(opts: {
     [edgeNodeId, opts.body.batch_id]
   );
   if (existing.rows.length > 0) {
-    if (existing.rows[0].payload_hash === opts.body.payload_hash) {
+    if (String(existing.rows[0].payload_hash).toLowerCase() === payloadHash) {
       return { duplicate: true, edge_node_id: edgeNodeId, accepted: 0, sampled: 0 };
     }
     throw new AppError(CODES.CONFLICT, 'batch_id reused with different payload_hash');
   }
 
   const sampleRate = await loadSampleRate(opts.tenantId);
+  const aggMap = new Map<string, AggRow>();
+  const samples: DecisionWire[] = [];
+  for (const d of opts.body.decisions) {
+    const bucket = minuteBucket(d.decided_at);
+    bumpAgg(aggMap, bucket, 'all', '', d.action);
+    bumpAgg(aggMap, bucket, 'fingerprint', d.fingerprint, d.action);
+    if (d.principal_id) {
+      bumpAgg(aggMap, bucket, 'principal', d.principal_id, d.action);
+    }
+    if (shouldSample(d.action, d.decided_at, sampleRate)) {
+      samples.push(d);
+    }
+  }
+
   const client = await pool.connect();
-  let sampled = 0;
+  let began = false;
   try {
     await client.query('BEGIN');
+    began = true;
     await client.query(
       `INSERT INTO decision_batches
          (edge_node_id, batch_id, tenant_id, first_wal_seq, last_wal_seq, payload_hash)
@@ -133,74 +244,29 @@ export async function ingestDecisionBatch(opts: {
         opts.tenantId,
         opts.body.first_wal_seq,
         opts.body.last_wal_seq,
-        opts.body.payload_hash,
+        payloadHash,
       ]
     );
-
-    for (const d of opts.body.decisions) {
-      const bucket = minuteBucket(d.decided_at);
-      // dimension_kind=all
-      await client.query(
-        `INSERT INTO decision_aggregates
-           (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action, count)
-         VALUES ($1, $2, $3, 'all', '', $4, 1)
-         ON CONFLICT (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action)
-         DO UPDATE SET count = decision_aggregates.count + 1`,
-        [opts.tenantId, edgeNodeId, bucket.toISOString(), d.action]
-      );
-      if (d.principal_id) {
-        await client.query(
-          `INSERT INTO decision_aggregates
-             (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action, count)
-           VALUES ($1, $2, $3, 'principal', $4, $5, 1)
-           ON CONFLICT (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action)
-           DO UPDATE SET count = decision_aggregates.count + 1`,
-          [opts.tenantId, edgeNodeId, bucket.toISOString(), d.principal_id, d.action]
-        );
-      }
-      await client.query(
-        `INSERT INTO decision_aggregates
-           (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action, count)
-         VALUES ($1, $2, $3, 'fingerprint', $4, $5, 1)
-         ON CONFLICT (tenant_id, edge_node_id, bucket_minute, dimension_kind, dimension_value, action)
-         DO UPDATE SET count = decision_aggregates.count + 1`,
-        [opts.tenantId, edgeNodeId, bucket.toISOString(), d.fingerprint, d.action]
-      );
-
-      if (shouldSample(d.action, d.wal_seq, sampleRate)) {
-        sampled += 1;
-        await client.query(
-          `INSERT INTO decision_samples
-             (tenant_id, edge_node_id, wal_seq, fingerprint, principal_id, score, blacklisted,
-              score_reason, action, decided_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (edge_node_id, wal_seq) DO NOTHING`,
-          [
-            opts.tenantId,
-            edgeNodeId,
-            d.wal_seq,
-            d.fingerprint,
-            d.principal_id ?? null,
-            d.score ?? null,
-            d.blacklisted ?? null,
-            d.score_reason ?? null,
-            d.action,
-            d.decided_at,
-          ]
-        );
-      }
-    }
-
+    await insertAggregates(client, opts.tenantId, edgeNodeId, [...aggMap.values()]);
+    await insertSamples(client, opts.tenantId, edgeNodeId, samples);
     await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK');
-    // Race: concurrent duplicate insert on batch_id
+    if (began) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback errors; connection will be discarded by release
+      }
+    }
     if ((err as { code?: string }).code === '23505') {
       const again = await pool.query(
         `SELECT payload_hash FROM decision_batches WHERE edge_node_id = $1 AND batch_id = $2`,
         [edgeNodeId, opts.body.batch_id]
       );
-      if (again.rows.length > 0 && again.rows[0].payload_hash === opts.body.payload_hash) {
+      if (
+        again.rows.length > 0 &&
+        String(again.rows[0].payload_hash).toLowerCase() === payloadHash
+      ) {
         return { duplicate: true, edge_node_id: edgeNodeId, accepted: 0, sampled: 0 };
       }
       throw new AppError(CODES.CONFLICT, 'batch_id reused with different payload_hash');
@@ -214,6 +280,6 @@ export async function ingestDecisionBatch(opts: {
     duplicate: false,
     edge_node_id: edgeNodeId,
     accepted: opts.body.decisions.length,
-    sampled,
+    sampled: samples.length,
   };
 }
