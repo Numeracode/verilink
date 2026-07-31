@@ -2,12 +2,13 @@ package edgeverifier
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"time"
 )
 
@@ -163,7 +164,7 @@ func (w *FlushWorker) Run(ctx context.Context) {
 					backoff = maxBackoff
 				}
 				// ±20% jitter
-				j := time.Duration(rand.Int64N(int64(backoff/5) + 1))
+				j := time.Duration(randInt63n(int64(backoff/5) + 1))
 				backoff = backoff - backoff/10 + j
 			} else {
 				backoff = 0
@@ -282,4 +283,16 @@ func (w *FlushWorker) logf(format string, args ...any) {
 	if w != nil && w.Logger != nil {
 		w.Logger.Printf("edgesync: "+format, args...)
 	}
+}
+
+// randInt63n returns a non-negative pseudo-random int64 in [0,n) using crypto/rand.
+func randInt63n(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return int64(binary.BigEndian.Uint64(b[:])>>1) % n
 }
