@@ -5,18 +5,31 @@ import express from 'express';
 import { config } from '../config.js';
 import { logger } from '../shared/logger.js';
 
-/** Resolve dashboard dist directory; empty string means "do not mount". */
-export function resolveDashboardDistPath(): string {
+const DISABLE_TOKENS = new Set(['off', 'false', '0', '-', 'disabled']);
+
+/**
+ * Resolve dashboard dist directory.
+ * Returns null when SPA mounting is explicitly disabled
+ * (`DASHBOARD_DIST_PATH` / config = off|false|0|-|disabled).
+ * When unset, falls back to `../dashboard/dist` (mount only if index.html exists).
+ */
+export function resolveDashboardDistPath(): string | null {
   // Prefer live env so tests can set DASHBOARD_DIST_PATH after config freeze.
-  const fromEnv = (process.env.DASHBOARD_DIST_PATH || config.dashboard.distPath || '').trim();
-  if (fromEnv) return path.resolve(fromEnv);
+  const raw = (process.env.DASHBOARD_DIST_PATH || config.dashboard.distPath || '').trim();
+  if (raw && DISABLE_TOKENS.has(raw.toLowerCase())) {
+    return null;
+  }
+  if (raw) return path.resolve(raw);
   return path.resolve(process.cwd(), '../dashboard/dist');
 }
 
-function isSpaBypassPath(reqPath: string): boolean {
+/** True for API / health / webhook paths that must never receive SPA HTML. */
+export function isSpaBypassPath(reqPath: string): boolean {
   return (
     reqPath === '/healthz' ||
+    reqPath === '/v1' ||
     reqPath.startsWith('/v1/') ||
+    reqPath === '/webhooks' ||
     reqPath.startsWith('/webhooks/')
   );
 }
@@ -24,10 +37,14 @@ function isSpaBypassPath(reqPath: string): boolean {
 /**
  * Serve the Vite dashboard build (static assets + SPA fallback).
  * Must be mounted after API routes; never shadows /v1, /webhooks, /healthz.
- * No-ops when index.html is missing (local CP without a dashboard build).
+ * No-ops when disabled or when index.html is missing.
  */
 export function mountDashboardSpa(app: Express): void {
   const dist = resolveDashboardDistPath();
+  if (dist === null) {
+    logger.info('dashboard SPA mounting disabled via DASHBOARD_DIST_PATH');
+    return;
+  }
   const indexHtml = path.join(dist, 'index.html');
   if (!fs.existsSync(indexHtml)) {
     logger.info({ dist }, 'dashboard dist not found; SPA not mounted');

@@ -19,7 +19,8 @@ export async function apiFetch<T = unknown>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-  if (init.body && !headers.has('Content-Type')) {
+  // Only default JSON content-type for string bodies (JSON.stringify callers).
+  if (typeof init.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 

@@ -14,8 +14,9 @@ export function LoginPage() {
     e.preventDefault();
     setError(null);
     const key = apiKey.trim();
-    if (!key.startsWith('vrl_')) {
-      setError('API key must start with vrl_');
+    // Match control-plane authenticateApiKey: vrl_ + 64 hex = 68 chars.
+    if (!/^vrl_[0-9a-f]{64}$/i.test(key)) {
+      setError('API key must be vrl_ followed by 64 hex characters (68 total)');
       return;
     }
     auth.setToken(key);

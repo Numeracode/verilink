@@ -30,6 +30,7 @@ DASHBOARD_DIST_PATH=/absolute/path/to/dashboard/dist npm start  # in control-pla
 ```
 
 Default resolve: `control-plane` looks for `../dashboard/dist` relative to cwd when `DASHBOARD_DIST_PATH` is unset.
+Set `DASHBOARD_DIST_PATH=off` (or `false` / `0` / `-` / `disabled`) to skip SPA mounting.
 
 ## Auth
 

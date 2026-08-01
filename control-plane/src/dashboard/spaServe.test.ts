@@ -72,4 +72,15 @@ describe('dashboard SPA serve', () => {
     const body = (await res.json()) as { ok?: boolean };
     assert.notEqual(body.ok, true);
   });
+
+  it('does not serve SPA HTML for /v1 or /webhooks roots', async () => {
+    for (const p of ['/v1', '/webhooks']) {
+      const res = await fetch(`${baseUrl}${p}`);
+      assert.equal(res.status, 404, p);
+      const ct = res.headers.get('content-type') || '';
+      assert.match(ct, /json/i, p);
+      const text = await res.text();
+      assert.doesNotMatch(text, /VeriLink SPA/, p);
+    }
+  });
 });

@@ -69,7 +69,9 @@ export const config = Object.freeze({
     hmacSecret: optional('API_KEY_HMAC_SECRET'),
   }),
   dashboard: Object.freeze({
-    // Absolute or relative path to Vite build output. Empty → try ../dashboard/dist.
+    // Absolute/relative path to Vite build output.
+    // Sentinels off|false|0|-|disabled disable SPA mounting.
+    // Empty → try ../dashboard/dist (mount only if index.html exists).
     distPath: optional('DASHBOARD_DIST_PATH'),
   }),
 });

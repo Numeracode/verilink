@@ -45,6 +45,24 @@ describe('apiFetch', () => {
       globalThis.fetch = original;
     }
   });
+
+  it('sets Content-Type only for string bodies', async () => {
+    const calls: Headers[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = async (_input, init) => {
+      calls.push(new Headers(init?.headers));
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    try {
+      await apiFetch('/v1/a', { method: 'POST', body: JSON.stringify({ x: 1 }) });
+      expect(calls[0].get('Content-Type')).toBe('application/json');
+      calls.length = 0;
+      await apiFetch('/v1/b', { method: 'POST', body: new Blob(['x']) });
+      expect(calls[0].has('Content-Type')).toBe(false);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });
 
 describe('oidc pkce', () => {
