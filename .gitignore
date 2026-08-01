@@ -2,3 +2,10 @@ auto_merge.log
 .codero/
 *.log
 /edge-verifier
+
+# Node / build artifacts
+node_modules/
+**/node_modules/
+control-plane/dist/
+dashboard/dist/
+*.tsbuildinfo

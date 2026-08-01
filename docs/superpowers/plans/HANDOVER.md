@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-08-01  
-> **Repo HEAD:** `main` @ Plan 9 docs (#24) merged  
-> **Status:** Plans 1–8 done. Plan 9 docs locked.  
-> **Next session:** Plan 9 PR A — dashboard shell
+> **Repo HEAD:** `main` @ Plan 9 docs (#24); PR A (dashboard shell) in flight  
+> **Status:** Plans 1–8 done. Plan 9 docs locked. PR A scaffolding.  
+> **Next session:** Land Plan 9 PR A → PR B provider reads
 
 ---
 
@@ -93,12 +93,12 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 9 — Dashboard — DOCS DONE; PR A NEXT
+## Plan 9 — Dashboard — PR A IN FLIGHT
 
 - Plan doc: `docs/superpowers/plans/2026-08-01-plan-9-dashboard.md` (merged PR #24)
 - Design: §11 + §13 step 13
 - **Docs:** locked decisions (layout, kit scaffold, auth/`platform_role`/`X-Tenant-Id`, APIs, Stripe, PR split A–D)
-- **Next:** PR A — `dashboard/` Vite scaffold + auth client + CP static serve
+- **PR A:** `dashboard/` Vite scaffold + auth client + CP static serve — **in progress** (`feat/dashboard-pr-a`)
 - **Not started:** policy/API-key/billing HTTP, SPA views (B–D)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.

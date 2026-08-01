@@ -14,6 +14,7 @@ import attestationsRouter from './routes/attestations.js';
 import syncRouter from './routes/sync.js';
 import adminRouter from './routes/admin.js';
 import decisionsRouter from './routes/decisions.js';
+import { mountDashboardSpa } from './dashboard/spaServe.js';
 
 export function createApp() {
   const app = express();
@@ -51,6 +52,9 @@ export function createApp() {
   // app.use('/v1/api-keys', apikeysRouter);
   // app.use('/v1/edge-nodes', edgenodesRouter);
   // app.use('/v1/tenants', tenantsRouter);
+
+  // Dashboard SPA (after API routes; skips /v1, /webhooks, /healthz)
+  mountDashboardSpa(app);
 
   // 404 catch-all
   app.use((_req, res) => {

@@ -1,0 +1,57 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { ApiError, apiFetch } from '../api/client';
+import { setStoredTenantId, setStoredToken } from '../auth/session';
+import { createPkcePair } from '../auth/oidc';
+
+describe('apiFetch', () => {
+  beforeEach(() => {
+    setStoredToken(null);
+    setStoredTenantId(null);
+  });
+
+  it('attaches Authorization and X-Tenant-Id', async () => {
+    setStoredToken('vrl_test');
+    setStoredTenantId('11111111-1111-1111-1111-111111111111');
+
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, headers: new Headers(init?.headers) });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    try {
+      const body = await apiFetch<{ ok: boolean }>('/v1/health-proxy');
+      expect(body.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].headers.get('Authorization')).toBe('Bearer vrl_test');
+      expect(calls[0].headers.get('X-Tenant-Id')).toBe('11111111-1111-1111-1111-111111111111');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('throws ApiError on non-2xx', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 403 });
+    try {
+      await expect(apiFetch('/v1/x')).rejects.toBeInstanceOf(ApiError);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe('oidc pkce', () => {
+  it('creates verifier and S256 challenge', async () => {
+    const pair = await createPkcePair();
+    expect(pair.verifier.length).toBeGreaterThan(20);
+    expect(pair.challenge.length).toBeGreaterThan(20);
+    expect(pair.challenge).not.toContain('+');
+  });
+});
