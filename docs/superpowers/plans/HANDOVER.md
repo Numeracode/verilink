@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
-> **Updated:** 2026-07-31  
-> **Repo HEAD:** `main` @ Plan 8 PR C (#21) merged  
-> **Status:** Plans 1–8 done (A+B+C).  
-> **Next session:** Dashboard (design §13 step 13)
+> **Updated:** 2026-08-01  
+> **Repo HEAD:** `main` @ Plan 8 complete (#21); Plan 9 docs in flight  
+> **Status:** Plans 1–8 done. Plan 9 (dashboard) docs next.  
+> **Next session:** Land Plan 9 docs → PR A dashboard shell
 
 ---
 
@@ -87,9 +87,18 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ### What’s after Plan 8 (§13)
 
-1. **Dashboard** (step 13)  
+1. **Dashboard** (step 13) — Plan 9  
 2. **Bootstrap registry + seed** (step 14)  
 3. **Deploy / clients / reference integrations** (steps 15–18)
+
+---
+
+## Plan 9 — Dashboard — DOCS IN FLIGHT
+
+- Plan doc: `docs/superpowers/plans/2026-08-01-plan-9-dashboard.md`
+- Design: §11 + §13 step 13
+- **Docs PR:** locked decisions (layout, kit scaffold, auth, APIs, Stripe, PR split A–D)
+- **Not started:** `dashboard/` package, policy/API-key/billing HTTP, SPA views
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
@@ -107,6 +116,7 @@ Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `
 | `docs/superpowers/plans/2026-07-28-network-score-computation.md` | Plan 6 |
 | `docs/superpowers/plans/2026-07-29-plan-7-sse-edge-sync.md` | Plan 7 |
 | `docs/superpowers/plans/2026-07-30-plan-8-go-edge-hardening.md` | Plan 8 |
+| `docs/superpowers/plans/2026-08-01-plan-9-dashboard.md` | Plan 9 |
 | `docs/gate-contract.md` | Local + CI gate contract |
 | `internal/testutil/` | Go service harnesses |
 | `control-plane/src/testutil/` | TS DB/app harnesses |
