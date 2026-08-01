@@ -9,8 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "test:e2e": "sh -c 'if command -v pw-test >/dev/null 2>&1; then exec pw-test \"$@\"; else exec playwright test \"$@\"; fi' --"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",

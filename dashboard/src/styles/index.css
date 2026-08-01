@@ -1,5 +1,4 @@
 :root {
-  color-scheme: light;
   --bg: #f3f1ec;
   --ink: #1a1f1c;
   --muted: #5c675f;
@@ -7,6 +6,7 @@
   --panel: #fffdf8;
   --line: #d5d0c6;
   --danger: #9b2c2c;
+  color-scheme: light;
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   line-height: 1.45;
   color: var(--ink);
@@ -46,7 +46,6 @@ a {
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
-  backdrop-filter: blur(8px);
 }
 
 .shell__brand {
@@ -98,7 +97,8 @@ a {
 }
 
 .shell__tenant input {
-  min-width: 14rem;
+  width: min(14rem, 100%);
+  max-width: 100%;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 0.35rem;
@@ -149,12 +149,13 @@ a {
   gap: 0.75rem;
   padding: 2rem;
   text-align: center;
+  overflow-x: hidden;
 }
 
 .login__brand {
   margin: 0;
   font-family: 'Fraunces', Georgia, serif;
-  font-size: clamp(2.5rem, 6vw, 4rem);
+  font-size: clamp(2rem, 8vw, 4rem);
   letter-spacing: -0.03em;
 }
 
@@ -167,7 +168,10 @@ a {
   display: grid;
   gap: 0.75rem;
   text-align: left;
-  min-width: min(22rem, 90vw);
+  width: min(22rem, 100%);
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 
 .login__form label {

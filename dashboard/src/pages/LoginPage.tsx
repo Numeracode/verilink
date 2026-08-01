@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useAuth } from '../auth/AuthProvider';
 import { config } from '../config';
-import { buildAuthorizeUrl, createPkcePair } from '../auth/oidc';
+import { buildAuthorizeUrl, createPkcePair, discoverOidc } from '../auth/oidc';
 
 export function LoginPage() {
   const auth = useAuth();
@@ -31,13 +31,14 @@ export function LoginPage() {
     }
     try {
       const { verifier, challenge } = await createPkcePair();
+      const discovery = await discoverOidc(config.oidcIssuerUrl);
       const state = crypto.randomUUID();
       sessionStorage.setItem('verilink.oidc.verifier', verifier);
       sessionStorage.setItem('verilink.oidc.state', state);
       const redirectUri = `${window.location.origin}/auth/callback`;
       window.location.assign(
         buildAuthorizeUrl({
-          issuerUrl: config.oidcIssuerUrl,
+          authorizationEndpoint: discovery.authorization_endpoint,
           clientId: config.oidcClientId,
           redirectUri,
           state,

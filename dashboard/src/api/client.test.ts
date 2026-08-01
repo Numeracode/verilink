@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ApiError, apiFetch } from '../api/client';
 import { setStoredTenantId, setStoredToken } from '../auth/session';
-import { createPkcePair } from '../auth/oidc';
+import { createPkcePair, buildAuthorizeUrl, discoverOidc } from '../auth/oidc';
 
 describe('apiFetch', () => {
   beforeEach(() => {
@@ -71,5 +71,36 @@ describe('oidc pkce', () => {
     expect(pair.verifier.length).toBeGreaterThan(20);
     expect(pair.challenge.length).toBeGreaterThan(20);
     expect(pair.challenge).not.toContain('+');
+  });
+
+  it('buildAuthorizeUrl uses discovery authorization endpoint', () => {
+    const url = buildAuthorizeUrl({
+      authorizationEndpoint: 'https://example.com/oauth/authorize',
+      clientId: 'client',
+      redirectUri: 'http://localhost/auth/callback',
+      state: 'st',
+      codeChallenge: 'ch',
+    });
+    expect(url).toContain('https://example.com/oauth/authorize?');
+    expect(url).toContain('code_challenge=ch');
+  });
+
+  it('discoverOidc reads well-known document', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          authorization_endpoint: 'https://idp.example/authorize',
+          token_endpoint: 'https://idp.example/token',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    try {
+      const d = await discoverOidc('https://idp.example');
+      expect(d.authorization_endpoint).toBe('https://idp.example/authorize');
+      expect(d.token_endpoint).toBe('https://idp.example/token');
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Express, NextFunction, Request, Response } from 'express';
 import express from 'express';
 import { config } from '../config.js';
@@ -7,11 +8,18 @@ import { logger } from '../shared/logger.js';
 
 const DISABLE_TOKENS = new Set(['off', 'false', '0', '-', 'disabled']);
 
+/** Repo `dashboard/dist` relative to this module (control-plane/src/dashboard/). */
+const MODULE_DASHBOARD_DIST = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../dashboard/dist'
+);
+
 /**
  * Resolve dashboard dist directory.
  * Returns null when SPA mounting is explicitly disabled
  * (`DASHBOARD_DIST_PATH` / config = off|false|0|-|disabled).
- * When unset, falls back to `../dashboard/dist` (mount only if index.html exists).
+ * When unset, uses the monorepo `dashboard/dist` next to `control-plane/`
+ * (stable regardless of process cwd).
  */
 export function resolveDashboardDistPath(): string | null {
   // Prefer live env so tests can set DASHBOARD_DIST_PATH after config freeze.
@@ -20,7 +28,7 @@ export function resolveDashboardDistPath(): string | null {
     return null;
   }
   if (raw) return path.resolve(raw);
-  return path.resolve(process.cwd(), '../dashboard/dist');
+  return MODULE_DASHBOARD_DIST;
 }
 
 /** True for API / health / webhook paths that must never receive SPA HTML. */

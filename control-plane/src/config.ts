@@ -71,7 +71,7 @@ export const config = Object.freeze({
   dashboard: Object.freeze({
     // Absolute/relative path to Vite build output.
     // Sentinels off|false|0|-|disabled disable SPA mounting.
-    // Empty → try ../dashboard/dist (mount only if index.html exists).
+    // Empty → monorepo dashboard/dist (resolved from this package, not cwd).
     distPath: optional('DASHBOARD_DIST_PATH'),
   }),
 });
