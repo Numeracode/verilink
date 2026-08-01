@@ -27,7 +27,7 @@
 1. **Layout:** new top-level `dashboard/` package (Vite + React + TypeScript). Do **not** nest under `control-plane/`. Control plane remains the only HTTP process that serves the built SPA in production.
 2. **Serving:** production CP serves `dashboard/dist` as static files; SPA fallback for non-`/v1/*` and non-`/healthz` / non-webhook paths. Dev: Vite on its own port with `VITE_API_BASE_URL` pointing at CP. CORS already configurable via `CORS_ORIGIN`.
 3. **Kit strategy — scaffold, do not clone Whimsy:** reuse **patterns** from Whimsy/Numera (Vite, Radix primitives, TanStack Query + Router, recharts, `pw-test` for Playwright). Do **not** copy Whimsy Firebase auth, file browser, or product pages. Fresh VeriLink routes/components/branding.
-4. **Auth:** Clerk via **generic OIDC** (Authorization Code + PKCE) in the SPA; API calls use `Authorization: Bearer <access_token>`. Reuse existing CP `authenticateOidc` / membership resolution. No Clerk session SDK in the SPA. Platform staff = `users.is_staff` (existing). Tenant context: memberships table; UI requires an active tenant selection when the user has multiple.
+4. **Auth:** Clerk via **generic OIDC** (Authorization Code + PKCE) in the SPA; API calls use `Authorization: Bearer <access_token>`. Reuse existing CP `authenticateOidc` / membership resolution. No Clerk session SDK in the SPA. Platform staff = `users.platform_role` in `('staff', 'admin')` → `req.user.isStaff` (migration `008_platform_role`; not a boolean `is_staff` column). **Active tenant:** the SPA sends `X-Tenant-Id: <uuid>` on API requests when the user has (or selects among) memberships; `authenticateOidc` must validate that header against `tenant_memberships` for the user and set `req.user.tenantId` / role from the matching membership (fallback to `memberships[0]` only when the header is absent — single-tenant convenience). Reject with `403` if `X-Tenant-Id` is present but not a membership.
 5. **Three views (role gates):**
    - **Provider** — tenant members (prefer `tenant:admin` / `policy:admin` for writes). Trust summary (aggregates), sampled decision feed, agent list with `score` + `blacklisted` + `score_reason` (never infer blacklist from score==0), policy editor, API keys, edge sync status, billing portal link.
    - **Agent-builder** — tenant members: owned principals (`owner_tenant_id`), keys, assurance derived from keys, attestation feed (in/out), score history chart, issuer relationships (read-only), billing link.
@@ -58,8 +58,8 @@
 ## Suggested PR split
 
 1. **Docs PR (this):** Plan 9 locked decisions + HANDOVER pointer
-2. **PR A — shell:** `dashboard/` Vite scaffold + TanStack Router routes + OIDC/API-key auth client + CP static serve of `dashboard/dist` + health/smoke
-3. **PR B — provider data path:** CP read APIs (aggregates, samples, scores history, graph summary, edge-nodes, policies GET) + provider view charts/feed/agent list
+2. **PR A — shell:** `dashboard/` Vite scaffold + TanStack Router routes + OIDC/API-key auth client + `X-Tenant-Id` wiring + CP static serve of `dashboard/dist` + health/smoke
+3. **PR B — provider data path:** CP `X-Tenant-Id` validation in `authenticateOidc` + read APIs (aggregates, samples, scores history, graph summary, edge-nodes, policies GET) + provider view charts/feed/agent list
 4. **PR C — control plane writes + agent-builder:** policy PUT, API key CRUD, agent-builder view (principals/attestations/history)
 5. **PR D — billing + admin:** Stripe checkout/portal/webhook, admin tenants/bootstrap/graph health/issuer queue
 
@@ -76,7 +76,9 @@
 - Serve SPA after API routes; never shadow `/v1` or `/webhooks/stripe`
 - Document build order: `dashboard` build → CP start (or compose)
 
-### Task 3: Policy + API key domains
+### Task 3: Policy + API key domains + active tenant header
+- Extend `authenticateOidc` to honor `X-Tenant-Id` (Decision 4): validate against `tenant_memberships`, set `req.user.tenantId` / role; `403` on mismatch
+- SPA tenant selector persists choice and attaches `X-Tenant-Id` on all CP fetches
 - Fill `domains/policy` + `domains/apikey` + routes; sync `policy.replace` on active policy change (existing sync allocator)
 
 ### Task 4: Decision + score read APIs
