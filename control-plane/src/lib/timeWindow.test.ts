@@ -32,6 +32,27 @@ describe('resolveTimeWindow', () => {
     });
   });
 
+  it('rejects Date-parseable but non-ISO 8601 forms (ambiguous)', () => {
+    for (const bad of ['January 2, 2024', '01/02/2024', '2024/01/02']) {
+      assert.throws(
+        () => resolveTimeWindow(bad, undefined),
+        (err: unknown) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.status, 400);
+          return true;
+        },
+        `expected ${bad} to be rejected`
+      );
+    }
+  });
+
+  it('accepts date-only and zoned ISO 8601 timestamps', () => {
+    const a = resolveTimeWindow('2026-08-01', '2026-08-02');
+    assert.equal(a.from.toISOString(), '2026-08-01T00:00:00.000Z');
+    const b = resolveTimeWindow('2026-08-01T00:00:00+00:00', '2026-08-02T00:00:00Z');
+    assert.equal(b.to.toISOString(), '2026-08-02T00:00:00.000Z');
+  });
+
   it('rejects from > to', () => {
     assert.throws(
       () => resolveTimeWindow('2026-08-02T00:00:00Z', '2026-08-01T00:00:00Z'),

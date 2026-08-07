@@ -262,7 +262,7 @@ a {
 
 .badge--passthrough {
   background: #f0ead2;
-  color: #8a7a3f;
+  color: #6b5d23; /* 5.4:1 on #f0ead2 — WCAG AA for normal text */
 }
 
 .kv {

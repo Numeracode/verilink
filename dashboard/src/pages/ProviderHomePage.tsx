@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { AppShell } from '../layouts/AppShell';
+import { useAuth } from '../auth/AuthProvider';
+import { providerQueryKeys } from '../lib/queryKeys';
 import {
   fetchActivePolicy,
   fetchAgents,
@@ -38,15 +40,17 @@ function PanelState({
 }
 
 export function ProviderHomePage() {
-  const summaryQuery = useQuery({ queryKey: ['graph-summary'], queryFn: fetchGraphSummary });
+  const auth = useAuth();
+  const keys = providerQueryKeys(auth.tenantId);
+  const summaryQuery = useQuery({ queryKey: keys.graphSummary, queryFn: fetchGraphSummary });
   const aggregatesQuery = useQuery({
-    queryKey: ['decision-aggregates'],
+    queryKey: keys.aggregates,
     queryFn: () => fetchAggregates('all'),
   });
-  const agentsQuery = useQuery({ queryKey: ['decision-agents'], queryFn: () => fetchAgents() });
-  const samplesQuery = useQuery({ queryKey: ['decision-samples'], queryFn: () => fetchSamples() });
-  const edgesQuery = useQuery({ queryKey: ['edge-nodes'], queryFn: fetchEdgeNodes });
-  const policyQuery = useQuery({ queryKey: ['policy-active'], queryFn: fetchActivePolicy });
+  const agentsQuery = useQuery({ queryKey: keys.agents, queryFn: () => fetchAgents() });
+  const samplesQuery = useQuery({ queryKey: keys.samples, queryFn: () => fetchSamples() });
+  const edgesQuery = useQuery({ queryKey: keys.edgeNodes, queryFn: fetchEdgeNodes });
+  const policyQuery = useQuery({ queryKey: keys.policyActive, queryFn: fetchActivePolicy });
 
   const stale = isScoreStale(summaryQuery.data?.latest_score_computed_at ?? null);
   const points = pivotAggregates(aggregatesQuery.data ?? []);
