@@ -16,6 +16,7 @@ import { KeyList } from './agent-builder/KeyList';
 import { AttestationFeed } from './agent-builder/AttestationFeed';
 import { ScoreHistoryChart } from './agent-builder/ScoreHistoryChart';
 import { IssuerCard } from './agent-builder/IssuerCard';
+import { BillingLink } from './BillingLink';
 
 function PanelState({
   isLoading,
@@ -130,6 +131,11 @@ export function AgentBuilderHomePage() {
             <h2>Issuer relationship</h2>
             <PanelState {...detailQuery} />
             {detailQuery.isSuccess && <IssuerCard issuer={detailQuery.data.issuer} />}
+          </section>
+
+          <section className="panel">
+            <h2>Billing</h2>
+            <BillingLink />
           </section>
         </>
       )}

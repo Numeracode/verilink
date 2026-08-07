@@ -19,6 +19,9 @@ import scoresRouter from './routes/scores.js';
 import graphRouter from './routes/graph.js';
 import edgeNodesRouter from './routes/edgeNodes.js';
 import apiKeysRouter from './routes/apiKeys.js';
+import billingRouter from './routes/billing.js';
+import tenantsRouter from './routes/tenants.js';
+import webhookStripeRouter from './routes/webhookStripe.js';
 import { mountDashboardSpa } from './dashboard/spaServe.js';
 
 export function createApp() {
@@ -32,8 +35,9 @@ export function createApp() {
   app.use(apiLimiter);
   app.use(auditMiddleware);
 
-  // Stripe webhook needs raw body (before json parser)
-  // app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
+  // Stripe webhook needs the raw body for signature verification (before json)
+  app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
+  app.use('/webhooks/stripe', webhookStripeRouter);
 
   app.use(express.json({ limit: '1mb' }));
   app.use((_req, res, next) => {
@@ -57,8 +61,8 @@ export function createApp() {
   app.use('/v1/graph', graphRouter);
   app.use('/v1/edge-nodes', edgeNodesRouter);
   app.use('/v1/api-keys', apiKeysRouter);
-  // Additional routes added in later plans:
-  // app.use('/v1/tenants', tenantsRouter);
+  app.use('/v1/billing', billingRouter);
+  app.use('/v1/tenants', tenantsRouter);
 
   // Dashboard SPA (after API routes; skips /v1, /webhooks, /healthz)
   mountDashboardSpa(app);

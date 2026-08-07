@@ -134,6 +134,8 @@ export async function resetTestData(pool: pg.Pool): Promise<void> {
   assertSafeVerilinkTestDb(url);
   await pool.query(`
     TRUNCATE
+      stripe_webhook_events,
+      subscriptions,
       decision_batches,
       decision_samples,
       decision_aggregates,
