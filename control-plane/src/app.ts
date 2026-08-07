@@ -18,6 +18,7 @@ import policiesRouter from './routes/policies.js';
 import scoresRouter from './routes/scores.js';
 import graphRouter from './routes/graph.js';
 import edgeNodesRouter from './routes/edgeNodes.js';
+import apiKeysRouter from './routes/apiKeys.js';
 import { mountDashboardSpa } from './dashboard/spaServe.js';
 
 export function createApp() {
@@ -55,8 +56,8 @@ export function createApp() {
   app.use('/v1/scores', scoresRouter);
   app.use('/v1/graph', graphRouter);
   app.use('/v1/edge-nodes', edgeNodesRouter);
+  app.use('/v1/api-keys', apiKeysRouter);
   // Additional routes added in later plans:
-  // app.use('/v1/api-keys', apikeysRouter);
   // app.use('/v1/tenants', tenantsRouter);
 
   // Dashboard SPA (after API routes; skips /v1, /webhooks, /healthz)

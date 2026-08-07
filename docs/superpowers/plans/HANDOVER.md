@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-08-07  
-> **Repo HEAD:** `main` @ Plan 9 PR A (#26); PR B (provider reads) in flight  
-> **Status:** Plans 1–8 done. Plan 9 PR A merged. PR B provider data path.  
-> **Next session:** Land Plan 9 PR B → PR C writes + agent-builder
+> **Repo HEAD:** `main` @ Plan 9 PR B (#27); PR C (writes + agent-builder) in flight  
+> **Status:** Plans 1–8 done. Plan 9 PR A + PR B merged. PR C writes + agent-builder.  
+> **Next session:** Land Plan 9 PR C → PR D billing + admin
 
 ---
 
@@ -93,14 +93,15 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 9 — Dashboard — PR B IN FLIGHT
+## Plan 9 — Dashboard — PR C IN FLIGHT
 
 - Plan doc: `docs/superpowers/plans/2026-08-01-plan-9-dashboard.md` (merged PR #24)
 - Design: §11 + §13 step 13
 - **Docs:** locked decisions (layout, kit scaffold, auth/`platform_role`/`X-Tenant-Id`, APIs, Stripe, PR split A–D)
 - **PR A (#26):** `dashboard/` Vite scaffold + auth client + CP static serve — **merged**
-- **PR B:** CP `X-Tenant-Id` validation in `authenticateOidc` + read APIs (`policies/active`, decisions `aggregates`/`samples`/`agents`, `scores/:id/history`, `graph/summary`, `edge-nodes`) + provider view (trust-summary chart, agent list, decision feed, edge sync status, policy card, staleness banner) — **in progress** (`feat/dashboard-pr-b`)
-- **Not started:** policy PUT + API-key CRUD + agent-builder view (PR C); billing + admin (PR D)
+- **PR B (#27):** CP `X-Tenant-Id` validation + provider read APIs + provider view — **merged**
+- **PR C:** `PUT /v1/policies/active` (+ `policy.replace` sync event), API-key CRUD (`GET/POST/DELETE /v1/api-keys`), agent-builder view (owned principals w/ derived `assurance_level`, keys, in/out attestation feed, score-history line chart, read-only issuer relationship) — **in progress** (`feat/dashboard-pr-c`)
+- **Not started:** billing + admin (PR D)
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
 
