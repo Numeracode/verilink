@@ -1,9 +1,9 @@
 # Handover Note — VeriLink Productization
 
 > **Updated:** 2026-08-07  
-> **Repo HEAD:** `main` @ Plan 9 PR C (#28); PR D (billing + admin) in flight  
-> **Status:** Plans 1–8 done. Plan 9 PR A + PR B + PR C merged. PR D billing + admin.  
-> **Next session:** Land Plan 9 PR D → Plan 9 complete; then §13 step 14 bootstrap seed
+> **Repo HEAD:** `main` @ Plan 9 complete (#29)  
+> **Status:** Plans 1–8 done. Plan 9 (Dashboard) complete — PRs A–D merged.  
+> **Next session:** §13 step 14 — bootstrap cold-start seed (registry + initial attestations)
 
 ---
 
@@ -93,7 +93,7 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 
 ---
 
-## Plan 9 — Dashboard — PR D IN FLIGHT
+## Plan 9 — Dashboard — COMPLETE
 
 - Plan doc: `docs/superpowers/plans/2026-08-01-plan-9-dashboard.md` (merged PR #24)
 - Design: §11 + §13 step 13
@@ -101,7 +101,7 @@ User judgment: **Plans 1–4 are covered well enough to move on.** Remaining wor
 - **PR A (#26):** `dashboard/` Vite scaffold + auth client + CP static serve — **merged**
 - **PR B (#27):** CP `X-Tenant-Id` validation + provider read APIs + provider view — **merged**
 - **PR C (#28):** `PUT /v1/policies/active` (+ `policy.replace` sync), API-key CRUD, agent-builder view — **merged**
-- **PR D:** Stripe checkout/portal (`POST /v1/billing/*`) + webhook (sig verify + idempotent dedup via `stripe_webhook_events`), admin `GET /v1/tenants` (staff all / membership-scoped), `GET/PATCH /v1/admin/bootstrap-issuers` (Root.weight de-emphasis), `GET /v1/admin/issuers/unverified`, admin view (graph health, tenants, bootstrap editor, issuer queue), billing link in provider + agent-builder — **in progress** (`feat/dashboard-pr-d`)
+- **PR D (#29):** Stripe checkout/portal (`POST /v1/billing/*`) + webhook (sig verify + idempotent dedup via `stripe_webhook_events`), admin `GET /v1/tenants` (staff all / membership-scoped), `GET/PATCH /v1/admin/bootstrap-issuers` (Root.weight de-emphasis), `GET /v1/admin/issuers/unverified`, admin view (graph health, tenants, bootstrap editor, issuer queue), billing link in provider + agent-builder — **merged**
 - **Migration 014:** `UNIQUE (tenant_id, stripe_subscription_id)` for webhook idempotency (justified per Decision 12).
 
 Also useful: refresh stale remote branches (`origin/feat/engine-trust-engine`, `origin/feat/attestation-ingest`, `origin/docs/verilink-productization-design`) if they are abandoned.
