@@ -14,6 +14,10 @@ import attestationsRouter from './routes/attestations.js';
 import syncRouter from './routes/sync.js';
 import adminRouter from './routes/admin.js';
 import decisionsRouter from './routes/decisions.js';
+import policiesRouter from './routes/policies.js';
+import scoresRouter from './routes/scores.js';
+import graphRouter from './routes/graph.js';
+import edgeNodesRouter from './routes/edgeNodes.js';
 import { mountDashboardSpa } from './dashboard/spaServe.js';
 
 export function createApp() {
@@ -47,10 +51,12 @@ export function createApp() {
   app.use('/v1/sync', syncRouter);
   app.use('/v1/admin', adminRouter);
   app.use('/v1/decisions', decisionsRouter);
+  app.use('/v1/policies', policiesRouter);
+  app.use('/v1/scores', scoresRouter);
+  app.use('/v1/graph', graphRouter);
+  app.use('/v1/edge-nodes', edgeNodesRouter);
   // Additional routes added in later plans:
-  // app.use('/v1/policies', policiesRouter);
   // app.use('/v1/api-keys', apikeysRouter);
-  // app.use('/v1/edge-nodes', edgenodesRouter);
   // app.use('/v1/tenants', tenantsRouter);
 
   // Dashboard SPA (after API routes; skips /v1, /webhooks, /healthz)
