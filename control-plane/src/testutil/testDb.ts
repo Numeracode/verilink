@@ -123,7 +123,15 @@ export async function setupTestDb(): Promise<pg.Pool> {
   return pool;
 }
 
-/** Truncate tenant-scoped / attestation tables between tests. */
+/**
+ * Truncate tenant-scoped / attestation tables between tests.
+ *
+ * The audit middleware writes async (fire-and-forget on res.finish) and can
+ * briefly hold row locks that TRUNCATE's AccessExclusiveLock waits on; in the
+ * slower CI environment that can deadlock. We run the TRUNCATE under a short
+ * lock_timeout and retry a few times so an in-flight audit write can commit
+ * and release before the next attempt. This is test-only and bounded.
+ */
 export async function resetTestData(pool: pg.Pool): Promise<void> {
   const url = pool.options?.connectionString;
   if (typeof url !== 'string' || url.length === 0) {
@@ -132,30 +140,54 @@ export async function resetTestData(pool: pg.Pool): Promise<void> {
     );
   }
   assertSafeVerilinkTestDb(url);
-  await pool.query(`
-    TRUNCATE
-      stripe_webhook_events,
-      subscriptions,
-      decision_batches,
-      decision_samples,
-      decision_aggregates,
-      sync_cursors,
-      edge_nodes,
-      policies,
-      sync_events,
-      network_score_history,
-      network_scores,
-      bootstrap_issuers,
-      attestations,
-      principal_keys,
-      issuers,
-      principals,
-      api_keys,
-      tenant_memberships,
-      users,
-      tenants
-    CASCADE
-  `);
+
+  const client = await pool.connect();
+  try {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '3s'");
+        await client.query(`
+          TRUNCATE
+            audit_log,
+            stripe_webhook_events,
+            subscriptions,
+            decision_batches,
+            decision_samples,
+            decision_aggregates,
+            sync_cursors,
+            edge_nodes,
+            policies,
+            sync_events,
+            network_score_history,
+            network_scores,
+            bootstrap_issuers,
+            attestations,
+            principal_keys,
+            issuers,
+            principals,
+            api_keys,
+            tenant_memberships,
+            users,
+            tenants
+          CASCADE
+        `);
+        await client.query('COMMIT');
+        return;
+      } catch (err: unknown) {
+        await client.query('ROLLBACK').catch(() => {});
+        // 40P01 deadlock_detected, 55P03 lock_not_available (lock_timeout)
+        if (attempt < 5 && err && typeof err === 'object' && 'code' in err && (err.code === '40P01' || err.code === '55P03')) {
+          // Brief backoff before retrying.
+          await new Promise((r) => setTimeout(r, 100 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
+  } finally {
+    client.release();
+  }
 }
 
 export async function teardownTestDb(pool: pg.Pool): Promise<void> {
