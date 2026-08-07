@@ -192,3 +192,98 @@ a {
   color: var(--danger);
   margin: 0;
 }
+
+/* Plan 9 PR B — provider view */
+.shell__main > * + * {
+  margin-top: 1.25rem;
+}
+
+.banner {
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+}
+
+.banner--stale {
+  background: #fdf3e0;
+  border: 1px solid #e2c98a;
+  color: #7a5b13;
+}
+
+.panel__error {
+  color: var(--danger);
+  margin: 0.5rem 0 0;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.badge--allow {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.badge--deny {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.badge--passthrough {
+  background: #f0ead2;
+  color: #8a7a3f;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem 1.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.kv dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.kv dd {
+  margin: 0.15rem 0 0;
+  font-weight: 600;
+}
+
+.chart {
+  margin-top: 0.75rem;
+}

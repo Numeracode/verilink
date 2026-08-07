@@ -5,6 +5,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { AppError, CODES } from '../shared/errors/AppError.js';
 import { config } from '../config.js';
 import { pool } from '../db/client.js';
+import { selectActiveMembership } from '../lib/activeMembership.js';
 
 // Clerk JWKS endpoint (fetched once, cached by openid-client)
 let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -128,11 +129,16 @@ async function authenticateOidc(token: string, req: Request, next: NextFunction)
     [userId]
   );
 
+  // Plan 9 Decision 4: honor X-Tenant-Id when present (validated against
+  // memberships); otherwise fall back to the first membership.
+  const requestedTenantId = req.get('x-tenant-id');
+  const active = selectActiveMembership(memberships, requestedTenantId);
+
   req.user = {
     type: 'oidc',
     userId,
-    tenantId: memberships[0]?.tenant_id || null,
-    role: memberships[0]?.role || 'member',
+    tenantId: active.tenantId,
+    role: active.role,
     tenantIds: memberships.map((m: { tenant_id: string }) => m.tenant_id),
     roles: memberships.map((m: { role: string }) => m.role),
     isStaff: platformRole === 'staff' || platformRole === 'admin',
