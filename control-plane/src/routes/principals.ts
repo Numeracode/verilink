@@ -11,9 +11,9 @@ router.use(authMw);
 
 router.get('/', defineHandler({
   query: {
-    entity_kind: { type: 'string', enum: ['agent', 'issuer', 'both'] },
-    limit: { type: 'number', min: 1, max: 200 },
-    offset: { type: 'number', min: 0 },
+    entity_kind: { type: 'string', enum: ['agent', 'issuer', 'both'], required: false },
+    limit: { type: 'number', min: 1, max: 200, required: false },
+    offset: { type: 'number', min: 0, required: false },
   },
   async handler(req, res) {
     const result = await principalService.listPrincipals({

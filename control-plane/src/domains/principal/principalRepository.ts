@@ -11,6 +11,16 @@ export interface Principal {
   first_seen_at: Date;
   last_seen_at: Date;
   status: string;
+  /** Derived: has a non-revoked key with control_verified_at set. */
+  assurance_level?: string;
+  /** Present when the principal is (also) an issuer. */
+  issuer?: IssuerAttrs | null;
+}
+
+export interface IssuerAttrs {
+  trust_weight: number;
+  verified_at: Date | null;
+  is_bootstrap: boolean;
 }
 
 export interface PrincipalKey {
@@ -46,8 +56,25 @@ export async function createPrincipal(
 }
 
 export async function getPrincipal(id: string): Promise<Principal | null> {
-  const { rows } = await pool.query('SELECT * FROM principals WHERE id = $1', [id]);
-  return rows[0] || null;
+  const { rows } = await pool.query(
+    `SELECT p.*, i.trust_weight::float AS trust_weight, i.verified_at, i.is_bootstrap
+     FROM principals p
+     LEFT JOIN issuers i ON i.principal_id = p.id
+     WHERE p.id = $1`,
+    [id]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return row.trust_weight === null
+    ? { ...row, issuer: null }
+    : {
+        ...row,
+        issuer: {
+          trust_weight: row.trust_weight,
+          verified_at: row.verified_at,
+          is_bootstrap: row.is_bootstrap,
+        },
+      };
 }
 
 export async function findOrCreateByLegacyDID(
@@ -112,7 +139,18 @@ export async function listPrincipals(opts: {
   const total = parseInt(countResult.rows[0].count, 10);
 
   const { rows } = await pool.query(
-    `SELECT * FROM principals ${where} ORDER BY first_seen_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
+    `SELECT p.*,
+            COALESCE(
+              (SELECT 'verified_key' WHERE EXISTS (
+                SELECT 1 FROM principal_keys k
+                WHERE k.principal_id = p.id
+                  AND k.revoked_at IS NULL
+                  AND k.control_verified_at IS NOT NULL
+              )),
+              'unknown'
+            ) AS assurance_level
+     FROM principals p ${where}
+     ORDER BY first_seen_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
     [...params, limit, offset]
   );
 

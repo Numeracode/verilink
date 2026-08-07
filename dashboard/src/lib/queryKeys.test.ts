@@ -21,3 +21,21 @@ describe('providerQueryKeys', () => {
     expect(keys.aggregates[keys.aggregates.length - 1]).toBe('none');
   });
 });
+
+
+import { agentBuilderQueryKeys } from './queryKeys';
+
+describe('agentBuilderQueryKeys', () => {
+  it('partitions by tenant and selected principal', () => {
+    const a = agentBuilderQueryKeys('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'vrl:p:1');
+    const b = agentBuilderQueryKeys('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'vrl:p:1');
+    const other = agentBuilderQueryKeys('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'vrl:p:2');
+    expect(a.detail).not.toEqual(b.detail);
+    expect(a.detail).not.toEqual(other.detail);
+  });
+
+  it('falls back to a sentinel for null tenant/principal', () => {
+    const keys = agentBuilderQueryKeys(null, null);
+    expect(keys.detail[keys.detail.length - 1]).toBe('none');
+  });
+});
