@@ -18,6 +18,7 @@ import { AgentList } from './provider/AgentList';
 import { DecisionFeed } from './provider/DecisionFeed';
 import { EdgeSyncStatus } from './provider/EdgeSyncStatus';
 import { PolicyCard } from './provider/PolicyCard';
+import { BillingLink } from './BillingLink';
 
 function PanelState({
   isLoading,
@@ -92,6 +93,11 @@ export function ProviderHomePage() {
         <h2>Active policy</h2>
         <PanelState {...policyQuery} />
         {policyQuery.isSuccess && <PolicyCard policy={policyQuery.data} />}
+      </section>
+
+      <section className="panel">
+        <h2>Billing</h2>
+        <BillingLink />
       </section>
     </AppShell>
   );
