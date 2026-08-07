@@ -132,13 +132,13 @@ export function AgentBuilderHomePage() {
             <PanelState {...detailQuery} />
             {detailQuery.isSuccess && <IssuerCard issuer={detailQuery.data.issuer} />}
           </section>
-
-          <section className="panel">
-            <h2>Billing</h2>
-            <BillingLink />
-          </section>
         </>
       )}
+
+      <section className="panel">
+        <h2>Billing</h2>
+        <BillingLink />
+      </section>
     </AppShell>
   );
 }

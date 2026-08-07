@@ -23,6 +23,11 @@ export function getTier(id: string): Tier | undefined {
   return TIERS.find((t) => t.id === id);
 }
 
+/** Reverse-lookup a tier from a Stripe Price id (for webhook plan resolution). */
+export function getTierByPriceId(priceId: string): Tier | undefined {
+  return TIERS.find((t) => t.priceId === priceId);
+}
+
 export function isPaidTier(tier: Tier): boolean {
   return tier.priceId !== null;
 }

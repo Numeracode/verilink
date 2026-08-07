@@ -9,6 +9,8 @@ import * as billingService from '../domains/billing/billingService.js';
 const router = Router();
 router.use(authMiddleware);
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function requireTenant(req: { user?: { tenantId?: string | null } }): string {
   const tenantId = req.user?.tenantId;
   if (!tenantId) throw new AppError(CODES.FORBIDDEN, 'Tenant required');
@@ -21,14 +23,19 @@ router.post(
   defineHandler({
     async handler(req, res) {
       const tenantId = requireTenant(req);
-      const { tier, customer_email } = req.body as { tier?: string; customer_email?: string };
+      const { tier, customer_email } = req.body as { tier?: string; customer_email?: unknown };
       if (!tier || typeof tier !== 'string') {
         throw new AppError(CODES.BAD_REQUEST, 'tier is required');
+      }
+      if (customer_email !== undefined && customer_email !== null) {
+        if (typeof customer_email !== 'string' || !EMAIL_RE.test(customer_email)) {
+          throw new AppError(CODES.BAD_REQUEST, 'customer_email must be a valid email address');
+        }
       }
       const { url } = await billingService.createCheckoutSession({
         tenantId,
         tierId: tier,
-        customerEmail: customer_email,
+        customerEmail: customer_email ?? undefined,
       });
       ok(res, { url });
     },

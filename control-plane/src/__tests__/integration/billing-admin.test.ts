@@ -2,6 +2,8 @@ process.env.DATABASE_URL ||=
   'postgresql://verilink:verilink@127.0.0.1:15432/verilink_test';
 process.env.API_KEY_HMAC_SECRET ||= 'test-hmac-secret-for-integration';
 process.env.STRIPE_PRICE_PRO ||= 'price_test_pro';
+process.env.STRIPE_WEBHOOK_SECRET ||= 'whsec_test';
+process.env.WEB_APP_URL ||= 'https://dashboard.verilink.test';
 
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -108,7 +110,7 @@ describe('Billing + Admin Integration', () => {
 
       const res = await fetch(`${harness.url}/webhooks/stripe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=1,v1=stub' },
         body: JSON.stringify(event),
       });
       const body = (await res.json()) as { data: { eventId: string; processed: boolean } };
@@ -126,7 +128,7 @@ describe('Billing + Admin Integration', () => {
 
       const replay = await fetch(`${harness.url}/webhooks/stripe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=1,v1=stub' },
         body: JSON.stringify(event),
       });
       const replayBody = (await replay.json()) as { data: { processed: boolean } };
@@ -138,6 +140,21 @@ describe('Billing + Admin Integration', () => {
         [tenantA.id]
       );
       assert.equal(after[0].n, 1, 'no duplicate subscription row');
+    });
+
+    it('webhook: rejects unsigned deliveries when STRIPE_WEBHOOK_SECRET is configured (401)', async () => {
+      const tenantA = await seedTenant(pool, `wh-sig-${Date.now()}`);
+      const event = {
+        id: 'evt_test_sig',
+        type: 'checkout.session.completed',
+        data: { object: { customer: 'cus_test', subscription: 'sub_test', metadata: { tenant_id: tenantA.id, plan: 'pro' } } },
+      };
+      const res = await fetch(`${harness.url}/webhooks/stripe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+      });
+      assert.equal(res.status, 401);
     });
 
     it('webhook: updates an existing subscription on customer.subscription.updated', async () => {
@@ -155,7 +172,7 @@ describe('Billing + Admin Integration', () => {
 
       const res = await fetch(`${harness.url}/webhooks/stripe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=2,v1=stub' },
         body: JSON.stringify(event),
       });
       assert.equal(res.status, 200);

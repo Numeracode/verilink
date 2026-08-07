@@ -53,6 +53,9 @@ router.patch(
       if (!body.principal_id || typeof body.principal_id !== 'string') {
         throw new AppError(CODES.BAD_REQUEST, 'principal_id is required');
       }
+      if (body.current_weight === undefined && body.de_emphasis_reason === undefined) {
+        throw new AppError(CODES.BAD_REQUEST, 'Provide at least one of current_weight or de_emphasis_reason');
+      }
       const update: bootstrapRepo.BootstrapUpdate = {};
       if (body.current_weight !== undefined) {
         if (

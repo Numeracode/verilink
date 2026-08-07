@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { TenantList } from './TenantList';
 import { GraphHealth } from './GraphHealth';
 import { IssuerVerificationQueue } from './IssuerVerificationQueue';
@@ -74,6 +74,16 @@ describe('BootstrapEditor', () => {
   it('renders an empty state', () => {
     render(<BootstrapEditor issuers={[]} onUpdate={() => Promise.resolve()} />);
     expect(screen.getByText(/No bootstrap issuers/)).toBeTruthy();
+  });
+
+  it('enables a reason-only save and calls onUpdate without changing weight', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(<BootstrapEditor issuers={[bootstrap]} onUpdate={onUpdate} />);
+    const input = screen.getByLabelText('De-emphasis reason');
+    fireEvent.change(input, { target: { value: 'organic volume' } });
+    const saveBtn = screen.getByRole('button', { name: 'Save reason' });
+    await fireEvent.click(saveBtn);
+    expect(onUpdate).toHaveBeenCalledWith(bootstrap.principal_id, { de_emphasis_reason: 'organic volume' });
   });
 });
 

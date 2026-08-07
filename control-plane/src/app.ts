@@ -32,13 +32,14 @@ export function createApp() {
   app.use(helmet());
   app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
   app.use(pinoHttp({ logger, autoLogging: false }));
-  app.use(apiLimiter);
-  app.use(auditMiddleware);
 
-  // Stripe webhook needs the raw body for signature verification (before json)
+  // Stripe webhook: raw body (before json) + exempt from the rate limiter/audit
+  // middleware, which apply only to user-facing routes below.
   app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
   app.use('/webhooks/stripe', webhookStripeRouter);
 
+  app.use(apiLimiter);
+  app.use(auditMiddleware);
   app.use(express.json({ limit: '1mb' }));
   app.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');

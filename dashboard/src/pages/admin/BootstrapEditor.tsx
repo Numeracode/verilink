@@ -42,10 +42,21 @@ function BootstrapRow({
   const [reason, setReason] = useState(issuer.de_emphasis_reason ?? '');
   const [busy, setBusy] = useState(false);
 
-  async function apply(weight: number) {
+  const reasonChanged = reason !== (issuer.de_emphasis_reason ?? '');
+
+  async function applyWeight(weight: number) {
     setBusy(true);
     try {
       await onUpdate(issuer.principal_id, { current_weight: weight, de_emphasis_reason: reason || null });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveReason() {
+    setBusy(true);
+    try {
+      await onUpdate(issuer.principal_id, { de_emphasis_reason: reason || null });
     } finally {
       setBusy(false);
     }
@@ -74,12 +85,20 @@ function BootstrapRow({
             key={w}
             type="button"
             className="shell__signout step-btn"
-            disabled={busy || w === issuer.current_weight}
-            onClick={() => apply(w)}
+            disabled={busy || (w === issuer.current_weight && !reasonChanged)}
+            onClick={() => applyWeight(w)}
           >
             {w}
           </button>
         ))}
+        <button
+          type="button"
+          className="shell__signout step-btn"
+          disabled={busy || !reasonChanged}
+          onClick={saveReason}
+        >
+          Save reason
+        </button>
       </td>
     </tr>
   );

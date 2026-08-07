@@ -1,6 +1,7 @@
 // control-plane/src/domains/billing/billingTransport.ts
 import Stripe from 'stripe';
 import { config } from '../../config.js';
+import { logger } from '../../shared/logger.js';
 
 /** Stripe surface the control plane needs. Stubbed in tests; no live Stripe. */
 export interface BillingTransport {
@@ -22,7 +23,7 @@ class StripeBillingTransport implements BillingTransport {
   private client: Stripe;
 
   constructor(secretKey: string) {
-    this.client = new Stripe(secretKey);
+    this.client = new Stripe(secretKey, { apiVersion: '2025-02-24.acacia' });
   }
 
   async createCheckoutSession(opts: {
@@ -39,6 +40,9 @@ class StripeBillingTransport implements BillingTransport {
       success_url: opts.successUrl,
       cancel_url: opts.cancelUrl,
       metadata: opts.metadata,
+      // Copy tenant_id/plan onto subscription events (customer.subscription.*)
+      // so webhook handlers can attribute updates without a DB lookup.
+      subscription_data: { metadata: opts.metadata ?? {} },
     });
     return { url: session.url!, customerId: (session.customer as string) ?? '' };
   }
@@ -60,10 +64,8 @@ class StripeBillingTransport implements BillingTransport {
   }
 }
 
-/** Deterministic transport used in tests (and dev without a Stripe key). */
+/** Deterministic transport used in tests and dev without a Stripe key. */
 export class StubBillingTransport implements BillingTransport {
-  private events: Stripe.Event[] = [];
-
   async createCheckoutSession(opts: {
     customerEmail?: string;
     priceId: string;
@@ -78,10 +80,9 @@ export class StubBillingTransport implements BillingTransport {
   }
 
   async constructEvent(rawBody: Buffer, _signature: string): Promise<Stripe.Event> {
-    // No signature verification in the stub — tests post signed-or-unsigned
-    // events directly. The handler decides whether to require a signature.
-    const json = JSON.parse(rawBody.toString('utf8')) as Stripe.Event;
-    return json;
+    // No signature verification in the stub — the handler decides whether a
+    // signature is required (secret configured / production).
+    return JSON.parse(rawBody.toString('utf8')) as Stripe.Event;
   }
 }
 
@@ -89,6 +90,11 @@ export function createBillingTransport(): BillingTransport {
   if (config.stripe.secretKey) {
     return new StripeBillingTransport(config.stripe.secretKey);
   }
+  // Never silently stub billing in production — fail loud instead.
+  if (config.server.nodeEnv === 'production') {
+    throw new Error('STRIPE_SECRET_KEY is required in production');
+  }
+  logger.warn('Billing is using the stub transport (no STRIPE_SECRET_KEY configured).');
   return new StubBillingTransport();
 }
 

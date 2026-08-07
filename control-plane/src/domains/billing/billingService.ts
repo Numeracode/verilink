@@ -3,9 +3,21 @@ import type Stripe from 'stripe';
 import { AppError, CODES } from '../../shared/errors/AppError.js';
 import { config } from '../../config.js';
 import { billingTransport } from './billingTransport.js';
-import { getTier, isPaidTier } from './tiers.js';
+import { getTier, getTierByPriceId, isPaidTier } from './tiers.js';
 import * as subRepo from './subscriptionRepository.js';
 import { claimWebhookEvent, markWebhookProcessed } from './webhookDedup.js';
+
+/** Absolute base URL for Stripe redirects (Stripe rejects relative URLs). */
+function webAppUrl(): string {
+  const base = process.env.WEB_APP_URL;
+  if (!base) {
+    throw new AppError(
+      CODES.SERVICE_UNAVAILABLE,
+      'WEB_APP_URL is not configured (required for Stripe redirects)'
+    );
+  }
+  return base.replace(/\/$/, '');
+}
 
 export async function createCheckoutSession(opts: {
   tenantId: string;
@@ -19,18 +31,12 @@ export async function createCheckoutSession(opts: {
   if (!isPaidTier(tier) || !tier.priceId) {
     throw new AppError(CODES.BAD_REQUEST, `Tier "${tier.id}" has no Stripe price configured`);
   }
-  const successUrl = process.env.WEB_APP_URL
-    ? `${process.env.WEB_APP_URL}/provider?billing=success`
-    : `/provider?billing=success`;
-  const cancelUrl = process.env.WEB_APP_URL
-    ? `${process.env.WEB_APP_URL}/provider?billing=cancelled`
-    : `/provider?billing=cancelled`;
-
+  const base = webAppUrl();
   const { url } = await billingTransport.createCheckoutSession({
     customerEmail: opts.customerEmail,
     priceId: tier.priceId,
-    successUrl,
-    cancelUrl,
+    successUrl: `${base}/provider?billing=success`,
+    cancelUrl: `${base}/provider?billing=cancelled`,
     metadata: { tenant_id: opts.tenantId, plan: tier.id },
   });
   return { url };
@@ -43,12 +49,10 @@ export async function createPortalSession(opts: {
   if (!subscription) {
     throw new AppError(CODES.NOT_FOUND, 'No subscription for tenant');
   }
-  const returnUrl = process.env.WEB_APP_URL
-    ? `${process.env.WEB_APP_URL}/provider`
-    : '/provider';
+  const base = webAppUrl();
   const { url } = await billingTransport.createPortalSession({
     customerId: subscription.stripe_customer_id,
-    returnUrl,
+    returnUrl: `${base}/provider`,
   });
   return { url };
 }
@@ -72,21 +76,27 @@ export async function handleWebhookEvent(
 
   const event = await billingTransport.constructEvent(rawBody, signature || '');
 
-  // Idempotent dedup — a replay of the same event id is a no-op.
+  // Idempotent dedup — an already-processed event is a no-op; an event that
+  // failed before being marked processed is reclaimable.
   const claimed = await claimWebhookEvent(event.id, event as unknown as Record<string, unknown>);
   if (!claimed) {
     return { eventId: event.id, processed: false };
   }
 
-  try {
-    await applyEvent(event);
-    await markWebhookProcessed(event.id);
-  } catch (err) {
-    // Leave the event un-processed so a retry can re-attempt; do not swallow.
-    throw err;
-  }
+  await applyEvent(event);
+  await markWebhookProcessed(event.id);
 
   return { eventId: event.id, processed: true };
+}
+
+/** Resolve a tier id from a Stripe Price id, falling back to "unknown". */
+function resolvePlan(priceId: string | undefined, metadataPlan: string | undefined): string {
+  if (metadataPlan) return metadataPlan;
+  if (priceId) {
+    const tier = getTierByPriceId(priceId);
+    if (tier) return tier.id;
+  }
+  return 'unknown';
 }
 
 async function applyEvent(event: Stripe.Event): Promise<void> {
@@ -100,27 +110,34 @@ async function applyEvent(event: Stripe.Event): Promise<void> {
       }
       await subRepo.upsertSubscription({
         tenantId,
-        stripeCustomerId: typeof session.customer === 'string' ? session.customer : session.customer.id,
+        stripeCustomerId:
+          typeof session.customer === 'string' ? session.customer : session.customer.id,
         stripeSubscriptionId: subscriptionId,
-        plan: session.metadata?.plan ?? 'pro',
+        plan: resolvePlan(undefined, session.metadata?.plan),
         status: 'active',
         currentPeriodEnd: null,
+        preserveOnConflict: true, // a late checkout event must not clobber a newer update
       });
       break;
     }
     case 'customer.subscription.updated':
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription;
-      const tenantId = (sub.metadata?.tenant_id as string | undefined) ?? null;
+      // Prefer metadata; fall back to the stored subscription row by sub id so
+      // metadata-free events (e.g. deletions created outside our checkout) still resolve.
+      let tenantId = (sub.metadata?.tenant_id as string | undefined) ?? null;
+      if (!tenantId) {
+        const existing = await subRepo.getSubscriptionByStripeId(sub.id);
+        tenantId = existing?.tenant_id ?? null;
+      }
       if (!tenantId) break;
-      const periodEnd = sub.current_period_end
-        ? new Date(sub.current_period_end * 1000)
-        : null;
+      const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
       await subRepo.upsertSubscription({
         tenantId,
-        stripeCustomerId: typeof sub.customer === 'string' ? sub.customer : sub.customer.id,
+        stripeCustomerId:
+          typeof sub.customer === 'string' ? sub.customer : sub.customer.id,
         stripeSubscriptionId: sub.id,
-        plan: sub.metadata?.plan ?? 'pro',
+        plan: resolvePlan(undefined, sub.metadata?.plan),
         status: event.type === 'customer.subscription.deleted' ? 'canceled' : sub.status,
         currentPeriodEnd: periodEnd,
       });

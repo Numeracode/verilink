@@ -31,7 +31,7 @@ export function BillingLink() {
       <button type="button" className="shell__signout" onClick={open} disabled={busy}>
         {busy ? 'Opening...' : 'Manage billing'}
       </button>
-      {msg && <span className="muted billing-link__msg">{msg}</span>}
+      {msg && <span className="muted billing-link__msg" role="status">{msg}</span>}
     </div>
   );
 }
