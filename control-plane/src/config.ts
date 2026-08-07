@@ -68,6 +68,12 @@ export const config = Object.freeze({
   apiKey: Object.freeze({
     hmacSecret: optional('API_KEY_HMAC_SECRET'),
   }),
+  dashboard: Object.freeze({
+    // Absolute/relative path to Vite build output.
+    // Sentinels off|false|0|-|disabled disable SPA mounting.
+    // Empty → monorepo dashboard/dist (resolved from this package, not cwd).
+    distPath: optional('DASHBOARD_DIST_PATH'),
+  }),
 });
 
 export function assertDatabaseConfigured(): void {
