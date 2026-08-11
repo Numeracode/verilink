@@ -182,8 +182,11 @@ describe('Bootstrap Seed Integration', () => {
     );
   });
 
-  it('seed aborts when a conflicting bootstrap-k1 key exists; no registry root created', async () => {
-    const target = SEED_ISSUERS[0];
+  it('seed aborts on conflict and rolls back earlier inserts; no registry root created', async () => {
+    // Target a LATER manifest entry so earlier entries are inserted first and
+    // must be rolled back when the conflict aborts the transaction.
+    const target = SEED_ISSUERS[1];
+    const earlier = SEED_ISSUERS[0];
 
     // Preload the manifest principal + issuer with a DIFFERENT key under the
     // manifest key id (simulates a key rotation that diverged from the manifest).
@@ -212,10 +215,10 @@ describe('Bootstrap Seed Integration', () => {
     );
 
     const { rows } = await pool.query(
-      `SELECT count(*)::int AS n FROM bootstrap_issuers WHERE principal_id = $1`,
-      [target.id]
+      `SELECT count(*)::int AS n FROM bootstrap_issuers WHERE principal_id = ANY($1::text[])`,
+      [[earlier.id, target.id]]
     );
-    assert.equal(rows[0].n, 0, 'no registry root created for conflicting key');
+    assert.equal(rows[0].n, 0, 'no registry root created for conflicting key or earlier entries (rolled back)');
   });
 
   it('seed is gated by BOOTSTRAP_SEED and refuses to run without it', async () => {
