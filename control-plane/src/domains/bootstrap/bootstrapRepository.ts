@@ -1,5 +1,6 @@
 // control-plane/src/domains/bootstrap/bootstrapRepository.ts
-import { pool } from '../../db/client.js';
+import { pool, withTransaction } from '../../db/transaction.js';
+import { deriveIsBootstrapForIssuer } from './bootstrapSeeder.js';
 
 export interface BootstrapIssuerRow {
   principal_id: string;
@@ -9,6 +10,8 @@ export interface BootstrapIssuerRow {
   de_emphasized_at: Date | null;
   approved_by: string | null;
   seeded_at: Date;
+  /** Explicit removal state (migration 015). */
+  removed_from_registry_at: Date | null;
   /** From issuers — read-only context for the queue. */
   trust_weight: number;
   verified_at: Date | null;
@@ -18,6 +21,7 @@ export async function listBootstrapIssuers(): Promise<BootstrapIssuerRow[]> {
   const { rows } = await pool.query(
     `SELECT b.principal_id, b.name, b.current_weight::float AS current_weight,
             b.de_emphasis_reason, b.de_emphasized_at, b.approved_by, b.seeded_at,
+            b.removed_from_registry_at,
             i.trust_weight::float AS trust_weight, i.verified_at
      FROM bootstrap_issuers b
      JOIN issuers i ON i.principal_id = b.principal_id
@@ -30,58 +34,70 @@ export interface BootstrapUpdate {
   current_weight?: number;
   de_emphasis_reason?: string | null;
   approved_by?: string | null;
+  /** Staff removal from the registry (migration 015); never reinstated by seed reruns. */
+  remove_from_registry?: boolean;
 }
 
 /**
  * Staff edit of a bootstrap issuer's Root.weight + de-emphasis reason.
  * `issuers.trust_weight` is untouched (the orthogonal quality knob; de-emphasis
  * is via Root.weight only — design §4.5). Sets de_emphasized_at when a reason
- * is provided. Returns 404 via the caller when the row does not exist.
+ * is provided. Weight steps and removal re-derive is_bootstrap in the same
+ * transaction so the registry and the derived flag can never diverge.
+ * Returns 404 via the caller when the row does not exist.
  */
 export async function updateBootstrapIssuer(
   principalId: string,
   update: BootstrapUpdate
 ): Promise<BootstrapIssuerRow | null> {
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  let idx = 1;
+  return withTransaction(async (client) => {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
 
-  if (update.current_weight !== undefined) {
-    sets.push(`current_weight = $${idx++}`);
-    params.push(update.current_weight);
-  }
-  if (update.de_emphasis_reason !== undefined) {
-    sets.push(`de_emphasis_reason = $${idx++}`);
-    params.push(update.de_emphasis_reason);
-    sets.push(`de_emphasized_at = $${idx++}`);
-    params.push(update.de_emphasis_reason ? new Date() : null);
-  }
-  if (update.approved_by !== undefined) {
-    sets.push(`approved_by = $${idx++}`);
-    params.push(update.approved_by);
-  }
-  if (sets.length === 0) return null;
+    if (update.current_weight !== undefined) {
+      sets.push(`current_weight = $${idx++}`);
+      params.push(update.current_weight);
+    }
+    if (update.de_emphasis_reason !== undefined) {
+      sets.push(`de_emphasis_reason = $${idx++}`);
+      params.push(update.de_emphasis_reason);
+      sets.push(`de_emphasized_at = $${idx++}`);
+      params.push(update.de_emphasis_reason ? new Date() : null);
+    }
+    if (update.approved_by !== undefined) {
+      sets.push(`approved_by = $${idx++}`);
+      params.push(update.approved_by);
+    }
+    if (update.remove_from_registry !== undefined) {
+      sets.push(`removed_from_registry_at = $${idx++}`);
+      params.push(update.remove_from_registry ? new Date() : null);
+    }
+    if (sets.length === 0) return null;
 
-  params.push(principalId);
-  const { rows } = await pool.query(
-    `UPDATE bootstrap_issuers SET ${sets.join(', ')}
-     WHERE principal_id = $${idx}
-     RETURNING principal_id, name, current_weight::float AS current_weight,
-               de_emphasis_reason, de_emphasized_at, approved_by, seeded_at`,
-    params
-  );
-  if (rows.length === 0) return null;
+    params.push(principalId);
+    const { rows } = await client.query(
+      `UPDATE bootstrap_issuers SET ${sets.join(', ')}
+       WHERE principal_id = $${idx}
+       RETURNING principal_id, name, current_weight::float AS current_weight,
+                 de_emphasis_reason, de_emphasized_at, approved_by, seeded_at,
+                 removed_from_registry_at`,
+      params
+    );
+    if (rows.length === 0) return null;
 
-  const row = rows[0];
-  const issuer = await pool.query(
-    `SELECT trust_weight::float AS trust_weight, verified_at FROM issuers WHERE principal_id = $1`,
-    [principalId]
-  );
-  return {
-    ...row,
-    trust_weight: issuer.rows[0]?.trust_weight ?? 1,
-    verified_at: issuer.rows[0]?.verified_at ?? null,
-  };
+    await deriveIsBootstrapForIssuer(client, principalId);
+
+    const issuer = await client.query(
+      `SELECT trust_weight::float AS trust_weight, verified_at FROM issuers WHERE principal_id = $1`,
+      [principalId]
+    );
+    return {
+      ...rows[0],
+      trust_weight: issuer.rows[0]?.trust_weight ?? 1,
+      verified_at: issuer.rows[0]?.verified_at ?? null,
+    };
+  });
 }
 
 export interface UnverifiedIssuerRow {
