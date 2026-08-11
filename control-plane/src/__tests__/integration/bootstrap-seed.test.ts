@@ -9,7 +9,6 @@ import type pg from 'pg';
 import { setupTestDb, teardownTestDb, resetTestData } from '../../testutil/testDb.js';
 import {
   seedTenant,
-  seedIssuer,
   seedApiKey,
   authHeaders,
 } from '../../testutil/seedData.js';
@@ -18,8 +17,9 @@ import { SEED_ISSUERS } from '../../domains/bootstrap/seedManifest.js';
 
 /**
  * Plan 10 PR A: idempotent bootstrap seed, is_bootstrap derivation, PATCH
- * removal survival across reruns, and root-weight write-through to the graph
- * loader. All seeded rows use the app pool (dynamic imports after env setup).
+ * removal survival across reruns, root-weight write-through to the graph
+ * loader, and manifest-conflict abort. All seeded rows use the app pool
+ * (dynamic imports after env setup).
  */
 describe('Bootstrap Seed Integration', () => {
   let pool: pg.Pool;
@@ -180,6 +180,42 @@ describe('Bootstrap Seed Integration', () => {
       !graph.roots.some((r) => r.id === target.id),
       'zero-weight root excluded from graph'
     );
+  });
+
+  it('seed aborts when a conflicting bootstrap-k1 key exists; no registry root created', async () => {
+    const target = SEED_ISSUERS[0];
+
+    // Preload the manifest principal + issuer with a DIFFERENT key under the
+    // manifest key id (simulates a key rotation that diverged from the manifest).
+    await pool.query(
+      `INSERT INTO principals (id, entity_kind, name) VALUES ($1, $2, $3)`,
+      [target.id, target.entityKind, target.name]
+    );
+    await pool.query(`INSERT INTO issuers (principal_id) VALUES ($1)`, [target.id]);
+    const otherRaw = Buffer.from('a'.repeat(32), 'utf8');
+    await pool.query(
+      `INSERT INTO principal_keys
+         (principal_id, key_id, public_key_raw, public_key_jwk, key_hash, control_verified_at)
+       VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '1 hour')`,
+      [
+        target.id,
+        target.keyId,
+        otherRaw,
+        JSON.stringify({ kty: 'OKP', crv: 'Ed25519', x: 'a'.repeat(43) }),
+        'deadbeef',
+      ]
+    );
+
+    await assert.rejects(
+      () => seedBootstrapRegistry(),
+      /bootstrap seed conflict: key .* different public key/
+    );
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM bootstrap_issuers WHERE principal_id = $1`,
+      [target.id]
+    );
+    assert.equal(rows[0].n, 0, 'no registry root created for conflicting key');
   });
 
   it('seed is gated by BOOTSTRAP_SEED and refuses to run without it', async () => {

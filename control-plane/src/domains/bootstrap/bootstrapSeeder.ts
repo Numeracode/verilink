@@ -22,10 +22,45 @@ function publicKeyJwk(x: string): Record<string, unknown> {
  * Insert-only for mutable registry columns so staff de-emphasis state
  * (current_weight, de_emphasized_at, de_emphasis_reason, approved_by,
  * removed_from_registry_at) survives reruns (plan decision 2).
+ *
+ * Conflict detection: if a principal or key already exists with identity
+ * fields that differ from the manifest (entity_kind, name, public_key_raw,
+ * key_hash), the seed aborts the whole transaction instead of silently
+ * continuing — a mismatched root must never be half-seeded.
  */
 async function upsertSeedIssuer(client: pg.PoolClient, entry: SeedIssuerEntry): Promise<void> {
   const keyHash = keyHashForX(entry.publicKeyX);
   const raw = Buffer.from(entry.publicKeyX, 'base64url');
+
+  const { rows: existingPrincipal } = await client.query(
+    `SELECT entity_kind, name FROM principals WHERE id = $1`,
+    [entry.id],
+  );
+  if (existingPrincipal.length > 0) {
+    const p = existingPrincipal[0];
+    if (p.entity_kind !== entry.entityKind || p.name !== entry.name) {
+      throw new Error(
+        `bootstrap seed conflict: principal ${entry.id} exists with entity_kind=${p.entity_kind} name=${p.name}, ` +
+          `manifest expects entity_kind=${entry.entityKind} name=${entry.name}`,
+      );
+    }
+  }
+
+  const { rows: existingKey } = await client.query(
+    `SELECT public_key_raw, key_hash FROM principal_keys WHERE principal_id = $1 AND key_id = $2`,
+    [entry.id, entry.keyId],
+  );
+  if (existingKey.length > 0) {
+    const k = existingKey[0];
+    const rawMatches = Buffer.isBuffer(k.public_key_raw)
+      ? k.public_key_raw.equals(raw)
+      : Buffer.from(k.public_key_raw).equals(raw);
+    if (!rawMatches || k.key_hash !== keyHash) {
+      throw new Error(
+        `bootstrap seed conflict: key ${entry.id}/${entry.keyId} exists with a different public key`,
+      );
+    }
+  }
 
   await client.query(
     `INSERT INTO principals (id, entity_kind, owner_tenant_id, name, metadata)

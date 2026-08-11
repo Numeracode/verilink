@@ -13,6 +13,9 @@
  * - Public keys below are static Ed25519 JWK `x` values. No private key is
  *   stored in the repo. Seed attestation signing (PR B) needs the bootstrap
  *   issuer's private key from ops (gitignored dev key / env), NOT the repo.
+ * - Only verified issuers are seeded as roots. Placeholder entries with
+ *   unverified public keys are intentionally NOT in the registry (CodeRabbit
+ *   review, PR #32): a root must be a real, verified issuer.
  */
 
 export interface SeedIssuerEntry {
@@ -45,30 +48,6 @@ export const SEED_ISSUERS: readonly SeedIssuerEntry[] = [
     keyId: BOOTSTRAP_KEY_ID,
     publicKeyX: 'Mz1Sin-ts2l2P3S0DBhehW02chXdBIg64OHbl2KmMUE',
     note: 'First seeded issuer (design §2.3 / §6.3). Legacy behavioral@0 allowlist member.',
-  },
-  {
-    id: 'vrl:p:33333333-3333-4333-8333-333333333333',
-    name: 'OpenCode',
-    entityKind: 'issuer',
-    keyId: BOOTSTRAP_KEY_ID,
-    publicKeyX: '2P_vnlJKoOvS3RymUzCPAfLiPCdgrOviJNOBR8v1ZI4',
-    note: 'Known agent framework with published public key (placeholder until curated).',
-  },
-  {
-    id: 'vrl:p:44444444-4444-4444-8444-444444444444',
-    name: 'Claude Agent SDK',
-    entityKind: 'issuer',
-    keyId: BOOTSTRAP_KEY_ID,
-    publicKeyX: 'lOW2hUe9TrmJY_wW7Hb7ZcSRQBD0jtrBdH8hBRFrIJo',
-    note: 'Known agent framework with published public key (placeholder until curated).',
-  },
-  {
-    id: 'vrl:p:55555555-5555-4555-8555-555555555555',
-    name: 'OpenAI Agents SDK',
-    entityKind: 'issuer',
-    keyId: BOOTSTRAP_KEY_ID,
-    publicKeyX: 'u7la3q9pSmZqK0p8tlPIK93yPKup_Ab8C_jdkWeJxXs',
-    note: 'Known agent framework with published public key (placeholder until curated).',
   },
 ];
 
