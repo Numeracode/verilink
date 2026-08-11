@@ -87,7 +87,9 @@ export async function loadAttestationGraphWithClient(
      FROM bootstrap_issuers b
      JOIN issuers i ON i.principal_id = b.principal_id
      JOIN principals p ON p.id = b.principal_id
-     WHERE p.status = 'active'`
+     WHERE p.status = 'active'
+       AND b.removed_from_registry_at IS NULL
+       AND b.current_weight > 0`
   );
 
   const roots: GraphRoot[] = rootRows.map((r) => ({

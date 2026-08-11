@@ -39,7 +39,8 @@ router.get(
 
 /**
  * PATCH /v1/admin/bootstrap-issuers — edit a bootstrap issuer's Root.weight
- * (de-emphasis) + reason. Staff-only; full cold-start seed remains Plan 14.
+ * (de-emphasis) + reason, or remove it from the registry. Staff-only; full
+ * cold-start seed is Plan 10 PR A (`npm run seed:bootstrap`).
  */
 router.patch(
   '/bootstrap-issuers',
@@ -49,12 +50,20 @@ router.patch(
         principal_id?: string;
         current_weight?: number;
         de_emphasis_reason?: string | null;
+        remove_from_registry?: boolean;
       };
       if (!body.principal_id || typeof body.principal_id !== 'string') {
         throw new AppError(CODES.BAD_REQUEST, 'principal_id is required');
       }
-      if (body.current_weight === undefined && body.de_emphasis_reason === undefined) {
-        throw new AppError(CODES.BAD_REQUEST, 'Provide at least one of current_weight or de_emphasis_reason');
+      if (
+        body.current_weight === undefined &&
+        body.de_emphasis_reason === undefined &&
+        body.remove_from_registry === undefined
+      ) {
+        throw new AppError(
+          CODES.BAD_REQUEST,
+          'Provide at least one of current_weight, de_emphasis_reason, or remove_from_registry'
+        );
       }
       const update: bootstrapRepo.BootstrapUpdate = {};
       if (body.current_weight !== undefined) {
@@ -73,6 +82,12 @@ router.patch(
           throw new AppError(CODES.BAD_REQUEST, 'de_emphasis_reason must be a string or null');
         }
         update.de_emphasis_reason = body.de_emphasis_reason;
+      }
+      if (body.remove_from_registry !== undefined) {
+        if (typeof body.remove_from_registry !== 'boolean') {
+          throw new AppError(CODES.BAD_REQUEST, 'remove_from_registry must be a boolean');
+        }
+        update.remove_from_registry = body.remove_from_registry;
       }
       update.approved_by = req.user?.userId ?? null;
 
