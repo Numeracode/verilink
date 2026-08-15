@@ -2,7 +2,7 @@
 # Plan 10 PR B: bring up the full VeriLink dev stack.
 #
 # Usage:
-#   scripts/dev-up.sh          # build + up
+#   scripts/dev-up.sh             # build + up
 #   scripts/dev-up.sh --no-build  # skip rebuild
 #
 # Requires: docker compose v2, .env.dev-keys (see .gitignore)
@@ -15,10 +15,11 @@ COMPOSE_FILE="$REPO_ROOT/docker-compose.dev.yml"
 DEV_KEYS="$REPO_ROOT/.env.dev-keys"
 
 if [ ! -f "$DEV_KEYS" ]; then
-  echo "ERROR: .env.dev-keys not found. Generate with:"
+  echo "ERROR: .env.dev-keys not found at $DEV_KEYS"
+  echo "Generate with:"
   echo "  node -e \"const c=require('crypto');const{publicKey,privateKey}=c.generateKeyPairSync('ed25519');"
   echo "  const p=publicKey.export({format:'jwk'});const s=privateKey.export({format:'jwk'});"
-  echo "  console.log('BOOTSTRAP_SEED_PRIVATE_KEY_JWK='+JSON.stringify(s))\" > .env.dev-keys"
+  echo "  console.log('BOOTSTRAP_SEED_PRIVATE_KEY_JWK='+JSON.stringify(s))\" > '$DEV_KEYS'"
   echo "Then update publicKeyX in seedManifest.ts to match the generated public key 'x' value."
   exit 1
 fi

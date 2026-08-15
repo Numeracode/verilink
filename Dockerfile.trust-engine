@@ -6,6 +6,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/trust-engine ./cmd/trust-engine
 
 FROM alpine:3.20
+RUN addgroup -S app && adduser -S app -G app
 COPY --from=build /out/trust-engine /usr/local/bin/trust-engine
+USER app
 EXPOSE 9091
 CMD ["trust-engine"]
