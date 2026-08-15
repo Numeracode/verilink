@@ -26,7 +26,7 @@ describe('Bootstrap Seed Integration', () => {
   let harness: ControlPlaneHarness;
 
   // Dynamic imports so db/client.ts evaluates after DATABASE_URL is set.
-  let seedBootstrapRegistry: () => Promise<{ issuers: number; roots: number }>;
+  let seedBootstrapRegistry: () => Promise<{ issuers: number; roots: number; attestations: number; subjects: number }>;
   let loadAttestationGraph: (evaluationTime: Date) => Promise<{
     roots: Array<{ id: string; weight: number }>;
   }>;

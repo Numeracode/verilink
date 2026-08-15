@@ -1,0 +1,76 @@
+# Plan 10 PR B: local dev environment for all VeriLink services.
+# Usage: scripts/dev-up.sh (or docker compose -f docker-compose.dev.yml up)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: verilink
+      POSTGRES_PASSWORD: verilink
+      POSTGRES_DB: verilink_dev
+    ports:
+      - "15432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verilink"]
+      interval: 2s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 10
+
+  control-plane:
+    build:
+      context: ./control-plane
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://verilink:verilink@postgres:5432/verilink_dev
+      API_KEY_HMAC_SECRET: dev-hmac-secret
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      BOOTSTRAP_SEED: "1"
+      BEHAVIORAL_V0_ALLOWLIST: "vrl:p:22222222-2222-4222-8222-222222222222"
+      BEHAVIORAL_V0_CUTOFF: "2027-01-01T00:00:00Z"
+      LOG_LEVEL: debug
+      NODE_ENV: development
+    env_file:
+      - .env.dev-keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "npm run migrate && npm run seed:bootstrap && npm run dev"
+
+  trust-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.trust-engine
+    ports:
+      - "9091:9091"
+    environment:
+      GRPC_LISTEN: "0.0.0.0:9091"
+      LOG_LEVEL: debug
+
+  edge-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.edge-verifier
+    ports:
+      - "8080:8080"
+    environment:
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      LISTEN: "0.0.0.0:8080"
+      LOG_LEVEL: debug
+    depends_on:
+      - trust-engine
+
+volumes:
+  pgdata:

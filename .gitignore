@@ -9,3 +9,6 @@ node_modules/
 control-plane/dist/
 dashboard/dist/
 *.tsbuildinfo
+
+# Dev signing keys (Plan 10 PR B)
+.env.dev-keys
