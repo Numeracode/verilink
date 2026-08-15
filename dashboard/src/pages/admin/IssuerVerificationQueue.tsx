@@ -1,8 +1,16 @@
 import type { UnverifiedIssuer } from '../../api/admin';
+import { EmptyState } from '../../components/EmptyState';
 
 export function IssuerVerificationQueue({ issuers }: { issuers: UnverifiedIssuer[] }) {
   if (issuers.length === 0) {
-    return <p className="muted">No issuers awaiting verification.</p>;
+    return (
+      <EmptyState
+        icon="issuer"
+        title="No issuers awaiting verification"
+        description="New issuers that have submitted a key-control proof but not yet been staff-verified appear here. The queue is empty when all known issuers are verified."
+        hint="Verification is a manual staff action that sets issuers.verified_at."
+      />
+    );
   }
   return (
     <table className="table">

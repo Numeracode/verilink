@@ -1,4 +1,5 @@
 import type { AttestationRow } from '../../api/agentBuilder';
+import { EmptyState } from '../../components/EmptyState';
 
 function shortId(id: string): string {
   const parts = id.split(':');
@@ -14,10 +15,30 @@ export function AttestationFeed({
   items: AttestationRow[];
 }) {
   if (items.length === 0) {
+    const isIn = direction === 'in';
     return (
-      <p className="muted">
-        No {direction === 'in' ? 'incoming' : 'outgoing'} attestations visible.
-      </p>
+      <EmptyState
+        icon="attest"
+        title={isIn ? 'No incoming attestations' : 'No outgoing attestations'}
+        description={
+          isIn
+            ? 'Other issuers can attest to this principal\'s behaviour. Incoming attestations appear here once a counterparty submits a signed JWS attestation naming this principal as the subject.'
+            : 'Submit a signed attestation about another principal to start building a trust relationship. Use the Go or Node client to sign and submit a JWS token to the control plane.'
+        }
+        action={
+          isIn
+            ? undefined
+            : {
+                label: 'View client docs',
+                href: 'https://github.com/Numeracode/verilink/tree/main/client',
+              }
+        }
+        hint={
+          isIn
+            ? 'Attestations are cryptographically signed JWS tokens with RFC 8785 canonicalized facts.'
+            : 'The client signs with your Ed25519 private key; the control plane verifies and stores the attestation.'
+        }
+      />
     );
   }
   return (

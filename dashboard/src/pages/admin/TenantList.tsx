@@ -1,8 +1,16 @@
 import type { TenantRow } from '../../api/admin';
+import { EmptyState } from '../../components/EmptyState';
 
 export function TenantList({ tenants }: { tenants: TenantRow[] }) {
   if (tenants.length === 0) {
-    return <p className="muted">No tenants visible to this account.</p>;
+    return (
+      <EmptyState
+        icon="tenants"
+        title="No tenants visible"
+        description="Tenants appear here once they are created. Your API key may be scoped to a single tenant; switch to a platform-staff key to see all tenants."
+        hint="Tenants are the top-level isolation boundary for principals, policies, and edge nodes."
+      />
+    );
   }
   return (
     <table className="table">

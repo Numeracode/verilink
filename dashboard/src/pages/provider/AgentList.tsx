@@ -1,7 +1,7 @@
 import type { AgentRow } from '../../api/provider';
+import { EmptyState } from '../../components/EmptyState';
 
 function shortId(id: string): string {
-  // vrl:p:<uuid> -> trailing 8 chars keeps tables readable
   const parts = id.split(':');
   const tail = parts[parts.length - 1] ?? id;
   return tail.length > 8 ? `...${tail.slice(-8)}` : tail;
@@ -9,7 +9,18 @@ function shortId(id: string): string {
 
 export function AgentList({ agents }: { agents: AgentRow[] }) {
   if (agents.length === 0) {
-    return <p className="muted">No agents observed in the last 24 hours.</p>;
+    return (
+      <EmptyState
+        icon="agents"
+        title="No agents observed yet"
+        description="Agents appear here once the edge verifier starts processing requests. Deploy the edge verifier in front of your API to start collecting decision data."
+        action={{
+          label: 'Deploy edge verifier',
+          href: 'https://github.com/Numeracode/verilink#edge-verifier',
+        }}
+        hint="Agents are identified by their cryptographic fingerprint and named vrl:p:<uuid>."
+      />
+    );
   }
   return (
     <table className="table">
@@ -33,7 +44,6 @@ export function AgentList({ agents }: { agents: AgentRow[] }) {
             <td className="num">{a.decisions}</td>
             <td className="num">{a.score ?? <span className="muted">-</span>}</td>
             <td>
-              {/* blacklisted comes from network_scores only - never inferred from score */}
               {a.blacklisted ? (
                 <span className="badge badge--deny">blacklisted</span>
               ) : a.score === null ? (

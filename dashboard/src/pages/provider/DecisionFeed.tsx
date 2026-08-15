@@ -1,4 +1,5 @@
 import type { SampleRow } from '../../api/provider';
+import { EmptyState } from '../../components/EmptyState';
 
 function shortFingerprint(fp: string): string {
   return fp.length > 12 ? `${fp.slice(0, 12)}...` : fp;
@@ -6,7 +7,18 @@ function shortFingerprint(fp: string): string {
 
 export function DecisionFeed({ samples }: { samples: SampleRow[] }) {
   if (samples.length === 0) {
-    return <p className="muted">No sampled decisions in the last 24 hours.</p>;
+    return (
+      <EmptyState
+        icon="decisions"
+        title="No decisions recorded yet"
+        description="The decision feed populates once the edge verifier starts evaluating incoming API requests against your trust policy. All deny decisions are kept; allows are sampled."
+        action={{
+          label: 'Configure policy',
+          href: 'https://github.com/Numeracode/verilink#policies',
+        }}
+        hint="Decisions are categorized as allow, deny, or passthrough based on your active policy threshold."
+      />
+    );
   }
   return (
     <table className="table">
