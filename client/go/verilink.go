@@ -210,7 +210,6 @@ func (c *Client) SignRequest(req *http.Request, keyLabel string) error {
 	return nil
 }
 
-
 // SignRequestWithIdempotencyKey sets an Idempotency-Key header on the request
 // and signs it with RFC 9421, including the Idempotency-Key as a covered
 // component in the signature base. This prevents a path-swap replay attack

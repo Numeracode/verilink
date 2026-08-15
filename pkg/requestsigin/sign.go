@@ -67,7 +67,6 @@ func Sign(method, targetURI string, created, expires int64, body []byte, keyID s
 	return sigInput, signature, nil
 }
 
-
 // ExtraComponent is an additional header to include in the signature base.
 type ExtraComponent struct {
 	Name  string
@@ -162,7 +161,6 @@ func VerifySignatureInput(sigInputHeader, sigHeader, method, targetURI string, g
 
 	return Verify(sigBase, sigHeader, pub)
 }
-
 
 // VerifySignatureInputWithExtra verifies a signature that may include extra
 // header components (e.g. Idempotency-Key). getExtraHeader returns the value
@@ -274,8 +272,9 @@ func parseSignatureInput(header string) (*SignatureInput, error) {
 
 func parseComponentList(s string) []string {
 	s = strings.TrimSpace(s)
-	var components []string
-	for _, c := range strings.Fields(s) {
+	fields := strings.Fields(s)
+	components := make([]string, 0, len(fields))
+	for _, c := range fields {
 		components = append(components, strings.Trim(c, `"`))
 	}
 	return components
@@ -284,7 +283,7 @@ func parseComponentList(s string) []string {
 func generateNonce() (string, error) {
 	b := make([]byte, 16)
 	for i := range b {
-		b[i] = byte(time.Now().UnixNano() >> uint(i*8))
+		b[i] = byte(time.Now().UnixNano() >> uint(uint(i)*8))
 	}
 	h := sha256.Sum256(b)
 	return base64.RawURLEncoding.EncodeToString(h[:16]), nil
