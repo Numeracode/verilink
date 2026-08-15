@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { BootstrapIssuer } from '../../api/admin';
+import { EmptyState } from '../../components/EmptyState';
 
 export interface BootstrapEditorProps {
   issuers: BootstrapIssuer[];
@@ -10,7 +11,18 @@ const STEPS = [1.0, 0.5, 0.25, 0];
 
 export function BootstrapEditor({ issuers, onUpdate }: BootstrapEditorProps) {
   if (issuers.length === 0) {
-    return <p className="muted">No bootstrap issuers registered.</p>;
+    return (
+      <EmptyState
+        icon="bootstrap"
+        title="No bootstrap issuers registered"
+        description="The bootstrap registry is empty. Run the seed script to populate the curated root-of-truth with the VeriLink bootstrap issuer and initial seed agents."
+        action={{
+          label: 'Open bootstrap runbook',
+          href: 'https://github.com/Numeracode/verilink/blob/main/docs/superpowers/plans/2026-08-11-plan-10-bootstrap-cold-start.md',
+        }}
+        hint="The seed is idempotent: reruns are no-ops and staff de-emphasis state is preserved."
+      />
+    );
   }
   return (
     <table className="table">

@@ -1,8 +1,20 @@
 import type { PrincipalKey } from '../../api/agentBuilder';
+import { EmptyState } from '../../components/EmptyState';
 
 export function KeyList({ keys }: { keys: PrincipalKey[] }) {
   if (keys.length === 0) {
-    return <p className="muted">No keys registered for this principal.</p>;
+    return (
+      <EmptyState
+        icon="keys"
+        title="No keys registered"
+        description="This principal has no registered Ed25519 keys. Register a key by submitting an attestation signed with the key, or use the keygen tool to generate a new keypair and register the public key."
+        action={{
+          label: 'Generate keypair',
+          href: 'https://github.com/Numeracode/verilink#keygen',
+        }}
+        hint="Key control is verified when the principal proves ownership via a signed challenge."
+      />
+    );
   }
   return (
     <table className="table">

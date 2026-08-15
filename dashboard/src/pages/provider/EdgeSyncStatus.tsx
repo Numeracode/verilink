@@ -1,8 +1,20 @@
 import type { EdgeNodeRow } from '../../api/provider';
+import { EmptyState } from '../../components/EmptyState';
 
 export function EdgeSyncStatus({ edges }: { edges: EdgeNodeRow[] }) {
   if (edges.length === 0) {
-    return <p className="muted">No edge nodes registered for this tenant yet.</p>;
+    return (
+      <EmptyState
+        icon="edge"
+        title="No edge nodes registered"
+        description="Register an edge verifier node to start receiving trust decisions. The edge verifier sits in front of your API and enforces allow/deny based on VeriLink trust scores."
+        action={{
+          label: 'View setup guide',
+          href: 'https://github.com/Numeracode/verilink/blob/main/docs/superpowers/specs/2026-07-25-verilink-productization-design.md',
+        }}
+        hint="The edge verifier connects to the control plane via SSE sync and enforces your active policy."
+      />
+    );
   }
   return (
     <table className="table">

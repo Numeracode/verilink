@@ -1,9 +1,20 @@
 import type { Policy } from '../../api/provider';
+import { EmptyState } from '../../components/EmptyState';
 
-/** Read-only active policy summary. Editing lands in Plan 9 PR C. */
 export function PolicyCard({ policy }: { policy: Policy | null }) {
   if (!policy) {
-    return <p className="muted">No active policy for this tenant.</p>;
+    return (
+      <EmptyState
+        icon="policy"
+        title="No active policy set"
+        description="An active policy defines the trust score threshold, below-threshold action, and unsigned request handling. Set one to start enforcing trust decisions at the edge."
+        action={{
+          label: 'Set active policy',
+          href: 'https://github.com/Numeracode/verilink#policies',
+        }}
+        hint="The policy is per-tenant and synced to all edge nodes via SSE."
+      />
+    );
   }
   return (
     <dl className="kv">

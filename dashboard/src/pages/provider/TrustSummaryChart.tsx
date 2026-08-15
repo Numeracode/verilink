@@ -9,6 +9,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { BucketPoint } from '../../lib/aggregates';
+import { EmptyState } from '../../components/EmptyState';
 
 const ACTION_COLORS: Record<string, string> = {
   allow: '#0f6b4c',
@@ -18,7 +19,14 @@ const ACTION_COLORS: Record<string, string> = {
 
 export function TrustSummaryChart({ points }: { points: BucketPoint[] }) {
   if (points.length === 0) {
-    return <p className="muted">No decisions in the last 24 hours.</p>;
+    return (
+      <EmptyState
+        icon="chart"
+        title="No decision data yet"
+        description="The trust summary chart populates once the edge verifier starts processing and sampling requests. Decisions are bucketed per minute and stacked by action (allow, deny, passthrough)."
+        hint="This chart updates automatically as decisions flow in."
+      />
+    );
   }
   return (
     <div className="chart" aria-label="Decisions per minute by action">

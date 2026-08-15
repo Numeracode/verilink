@@ -8,10 +8,18 @@ import {
   YAxis,
 } from 'recharts';
 import type { ScoreSeriesPoint } from '../../lib/scoreSeries';
+import { EmptyState } from '../../components/EmptyState';
 
 export function ScoreHistoryChart({ points }: { points: ScoreSeriesPoint[] }) {
   if (points.length === 0) {
-    return <p className="muted">No score history recorded for this principal yet.</p>;
+    return (
+      <EmptyState
+        icon="score"
+        title="No score history yet"
+        description="This principal\'s network score will appear here once the trust engine computes a score. Scores are recomputed periodically (hourly) and on every new attestation."
+        hint="The score is derived from the transitive trust graph using the VeriRank algorithm with time decay and distance decay."
+      />
+    );
   }
   return (
     <div className="chart" aria-label="Network score history">
