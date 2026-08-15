@@ -2,6 +2,7 @@ package requestsigin
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -282,9 +283,8 @@ func parseComponentList(s string) []string {
 
 func generateNonce() (string, error) {
 	b := make([]byte, 16)
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() >> uint(uint(i)*8))
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
 	}
-	h := sha256.Sum256(b)
-	return base64.RawURLEncoding.EncodeToString(h[:16]), nil
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
