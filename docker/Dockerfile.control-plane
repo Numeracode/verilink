@@ -1,18 +1,27 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY control-plane/package.json control-plane/package-lock.json* ./
 RUN npm ci --production=false
-COPY . .
+COPY control-plane/ ./
+COPY proto/ ./proto/
 RUN npm run build
+
+# Build dashboard
+COPY dashboard/package.json dashboard/package-lock.json* ./dashboard/
+RUN cd dashboard && npm ci
+COPY dashboard/ ./dashboard/
+RUN cd dashboard && npm run build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY control-plane/package.json control-plane/package-lock.json* ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/migrations ./migrations
-RUN chown -R node:node /app
+COPY --from=build /app/proto /proto
+COPY --from=build /app/dashboard/dist /dashboard/dist
+RUN chown -R node:node /app /proto
 USER node
 EXPOSE 3000
-HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD wget -qO- http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD wget -qO- http://localhost:3000/healthz || exit 1
 CMD ["node", "dist/index.js"]
