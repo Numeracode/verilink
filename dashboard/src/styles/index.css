@@ -355,3 +355,72 @@ a {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* De-emphasis panel */
+.de-emphasis-overview {
+  margin-bottom: 1rem;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.stat-card {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.stat-card--ok {
+  border-color: var(--accent);
+}
+.stat-card__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.stat-card__label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+.candidate-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  background: var(--panel);
+}
+.candidate-card--ready {
+  border-color: var(--accent);
+}
+.candidate-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.candidate-card__reasons {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+.candidate-card__counterfactual {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.candidate-card__counterfactual h4 {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.9rem;
+}
+.badge--allow {
+  background: var(--accent);
+  color: #fff;
+}
+.badge--deny {
+  background: var(--danger);
+  color: #fff;
+}
