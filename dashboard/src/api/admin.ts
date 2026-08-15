@@ -75,3 +75,52 @@ export async function createPortalSession(): Promise<string | null> {
     throw err;
   }
 }
+
+
+export interface ContributionSplit {
+  bootstrap_weighted: number;
+  organic_weighted: number;
+  organic_pct: number;
+  independent_organic_issuers: number;
+  window_days: number;
+  window_continuous: boolean;
+}
+
+export interface CounterfactualDrop {
+  principal_id: string;
+  current_score: number;
+  counterfactual_score: number;
+  serving_tenant_id: string | null;
+  tenant_threshold: number;
+  drops_below_threshold: boolean;
+}
+
+export interface CounterfactualReport {
+  root_id: string;
+  target_weight: number;
+  graph_version: number;
+  drops: CounterfactualDrop[];
+  worst_case_drop: number;
+}
+
+export interface DeEmphasisCandidate {
+  principal_id: string;
+  name: string;
+  current_weight: number;
+  contribution: ContributionSplit;
+  ready: boolean;
+  not_ready_reasons: string[];
+  counterfactual: CounterfactualReport | null;
+}
+
+export interface DeEmphasisResult {
+  generated_at: string;
+  window_days: number;
+  contribution: ContributionSplit;
+  candidates: DeEmphasisCandidate[];
+}
+
+export async function fetchDeEmphasis(): Promise<DeEmphasisResult> {
+  const res = await apiFetch<Envelope<DeEmphasisResult>>('/v1/admin/bootstrap/de-emphasis');
+  return res.data;
+}

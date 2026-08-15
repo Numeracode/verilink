@@ -8,6 +8,8 @@ import { TenantList } from './admin/TenantList';
 import { GraphHealth } from './admin/GraphHealth';
 import { BootstrapEditor } from './admin/BootstrapEditor';
 import { IssuerVerificationQueue } from './admin/IssuerVerificationQueue';
+import { DeEmphasisPanel } from './admin/DeEmphasisPanel';
+import { fetchDeEmphasis } from '../api/admin';
 
 function PanelState({
   isLoading,
@@ -38,6 +40,7 @@ export function AdminHomePage() {
   const bootstrapQuery = useQuery({ queryKey: ['admin', 'bootstrap', auth.tenantId ?? 'none'], queryFn: fetchBootstrapIssuers });
   const unverifiedQuery = useQuery({ queryKey: ['admin', 'unverified', auth.tenantId ?? 'none'], queryFn: fetchUnverifiedIssuers });
   const summaryQuery = useQuery({ queryKey: adminKeys.graphSummary, queryFn: fetchGraphSummary });
+  const deEmphasisQuery = useQuery({ queryKey: ['admin', 'de-emphasis', auth.tenantId ?? 'none'], queryFn: fetchDeEmphasis, staleTime: 60_000 });
 
   const updateMutation = useMutation({
     mutationFn: ({ principalId, patch }: { principalId: string; patch: { current_weight?: number; de_emphasis_reason?: string | null } }) =>
@@ -72,6 +75,13 @@ export function AdminHomePage() {
         {updateMutation.isError && (
           <p className="panel__error">Update failed: {updateMutation.error instanceof Error ? updateMutation.error.message : 'unknown'}</p>
         )}
+      </section>
+
+      <section className="panel">
+        <h2>De-emphasis readiness</h2>
+        <p className="muted">Bootstrap vs organic contribution over 30 days. Ready when {">=3"} independent organic issuers, {">=80%"} organic, continuous 30-day window, and no principal drops below threshold.</p>
+        <PanelState {...deEmphasisQuery} />
+        {deEmphasisQuery.isSuccess && <DeEmphasisPanel data={deEmphasisQuery.data} />}
       </section>
 
       <section className="panel">
