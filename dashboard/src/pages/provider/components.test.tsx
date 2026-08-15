@@ -84,6 +84,6 @@ describe('DecisionFeed', () => {
 
   it('renders an empty state', () => {
     render(<DecisionFeed samples={[]} />);
-    expect(screen.getByText(/No sampled decisions/)).toBeTruthy();
+    expect(screen.getByText(/No decisions recorded/)).toBeTruthy();
   });
 });
