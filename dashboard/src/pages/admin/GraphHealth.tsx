@@ -11,8 +11,8 @@ export function GraphHealth({ summary }: { summary: GraphSummary | undefined }) 
         title="Trust graph is empty"
         description="The graph will populate once principals (agents and issuers) are registered and attestations start flowing. Run the bootstrap seed to initialize the root-of-trust registry."
         action={{
-          label: 'Run bootstrap seed',
-          href: 'https://github.com/Numeracode/verilink#bootstrap-seed',
+          label: 'Open bootstrap runbook',
+          href: 'https://github.com/Numeracode/verilink/blob/main/docs/superpowers/plans/2026-08-11-plan-10-bootstrap-cold-start.md',
         }}
         hint="The seed creates the VeriLink bootstrap issuer and initial attestations for a non-empty cold-start graph."
       />

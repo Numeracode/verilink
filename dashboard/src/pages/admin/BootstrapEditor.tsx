@@ -17,8 +17,8 @@ export function BootstrapEditor({ issuers, onUpdate }: BootstrapEditorProps) {
         title="No bootstrap issuers registered"
         description="The bootstrap registry is empty. Run the seed script to populate the curated root-of-truth with the VeriLink bootstrap issuer and initial seed agents."
         action={{
-          label: 'Run bootstrap seed',
-          href: 'https://github.com/Numeracode/verilink#bootstrap-seed',
+          label: 'Open bootstrap runbook',
+          href: 'https://github.com/Numeracode/verilink/blob/main/docs/superpowers/plans/2026-08-11-plan-10-bootstrap-cold-start.md',
         }}
         hint="The seed is idempotent: reruns are no-ops and staff de-emphasis state is preserved."
       />

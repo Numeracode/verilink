@@ -1,14 +1,14 @@
 
 
+export type EmptyStateAction =
+  | { label: string; href: string; onClick?: never }
+  | { label: string; onClick: () => void; href?: never };
+
 export interface EmptyStateProps {
   icon: string;
   title: string;
   description: string;
-  action?: {
-    label: string;
-    href?: string;
-    onClick?: () => void;
-  };
+  action?: EmptyStateAction;
   hint?: string;
 }
 
@@ -43,7 +43,7 @@ export function EmptyState({ icon, title, description, action, hint }: EmptyStat
         <p className="empty-state__desc muted">{description}</p>
         {action && (
           <div className="empty-state__action">
-            {action.href ? (
+            {'href' in action ? (
               <a href={action.href} className="empty-state__cta" target="_blank" rel="noopener noreferrer">
                 {action.label}
               </a>
