@@ -143,3 +143,74 @@ func TestSignRequest_RoundTrip(t *testing.T) {
 		t.Fatalf("VerifySignatureInput: %v", err)
 	}
 }
+
+func TestSignRequestWithIdempotencyKey(t *testing.T) {
+	c := testClient(t)
+	body := []byte(`{"observations":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:9999/v1/attestations/submit", bytes.NewReader(body))
+
+	idempKey := "client-generated-uuid-123"
+	if err := c.SignRequestWithIdempotencyKey(req, "default", idempKey); err != nil {
+		t.Fatalf("SignRequestWithIdempotencyKey: %v", err)
+	}
+
+	if req.Header.Get("Idempotency-Key") != idempKey {
+		t.Errorf("Idempotency-Key = %q, want %q", req.Header.Get("Idempotency-Key"), idempKey)
+	}
+	if req.Header.Get("Signature-Input") == "" {
+		t.Error("Signature-Input header not set")
+	}
+	if !strings.Contains(req.Header.Get("Signature-Input"), "\"idempotency-key\"") {
+		t.Errorf("Signature-Input missing idempotency-key component: %s", req.Header.Get("Signature-Input"))
+	}
+}
+
+func TestSignRequestWithIdempotencyKey_RoundTrip(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(strings.NewReader("idemp-rt-seed-32-bytes-test-ok!!"))
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("failed to assert public key type")
+	}
+
+	c, err := NewClient(Config{
+		AttestationURL: "http://localhost:9999",
+		IssuerDID:      "did:key:idemp-rt",
+		PrivateKey:     priv,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	body := []byte(`{"data":"value"}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:9999/api/write", bytes.NewReader(body))
+
+	idempKey := "idemp-key-abc-123"
+	if err := c.SignRequestWithIdempotencyKey(req, "default", idempKey); err != nil {
+		t.Fatalf("SignRequestWithIdempotencyKey: %v", err)
+	}
+
+	sigInputHeader := req.Header.Get("Signature-Input")
+	sigHeader := req.Header.Get("Signature")
+
+	targetURI := "http://localhost:9999/api/write"
+	getBody := func() []byte { return body }
+	lookupKey := func(keyid string) (ed25519.PublicKey, error) {
+		if keyid == "vrl:agent:did:key:idemp-rt|default" {
+			return pub, nil
+		}
+		return nil, fmt.Errorf("unknown keyid: %s", keyid)
+	}
+	getExtraHeader := func(name string) string {
+		if name == "idempotency-key" {
+			return idempKey
+		}
+		return ""
+	}
+
+	if err := requestsigin.VerifySignatureInputWithExtra(sigInputHeader, sigHeader, http.MethodPost, targetURI, getBody, lookupKey, getExtraHeader); err != nil {
+		t.Fatalf("VerifySignatureInputWithExtra: %v", err)
+	}
+}

@@ -6,7 +6,7 @@
 // Typical usage:
 //
 //	c, err := verilink.NewClient(verilink.Config{
-//	    AttestationURL: "http://verilink-attest:8082",
+//	    AttestationURL: "https://api.verilink.ai",
 //	    IssuerDID:      "did:key:codero-system",
 //	    PrivateKey:     privKey, // ed25519.PrivateKey
 //	})
@@ -203,6 +203,51 @@ func (c *Client) SignRequest(req *http.Request, keyLabel string) error {
 	sigInput, sig, err := requestsigin.Sign(req.Method, targetURI, created, expires, body, keyID, c.cfg.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("verilink: sign request: %w", err)
+	}
+
+	req.Header.Set("Signature-Input", sigInput)
+	req.Header.Set("Signature", sig)
+	return nil
+}
+
+// SignRequestWithIdempotencyKey sets an Idempotency-Key header on the request
+// and signs it with RFC 9421, including the Idempotency-Key as a covered
+// component in the signature base. This prevents a path-swap replay attack
+// where a MITM reuses the key on a different endpoint.
+func (c *Client) SignRequestWithIdempotencyKey(req *http.Request, keyLabel, idempotencyKey string) error {
+	req.Header.Set("Idempotency-Key", idempotencyKey)
+
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("verilink: read request body: %w", err)
+		}
+		req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	targetURI := req.URL.String()
+	if !req.URL.IsAbs() {
+		scheme := "https"
+		if req.URL.Scheme != "" {
+			scheme = req.URL.Scheme
+		}
+		targetURI = scheme + "://" + req.Host + req.URL.RequestURI()
+	}
+
+	created := time.Now().Unix()
+	expires := created + 300
+
+	keyID := fmt.Sprintf("vrl:agent:%s|%s", c.cfg.IssuerDID, keyLabel)
+	extra := []requestsigin.ExtraComponent{
+		{Name: "idempotency-key", Value: idempotencyKey},
+	}
+
+	sigInput, sig, err := requestsigin.SignWithExtra(req.Method, targetURI, created, expires, body, keyID, c.cfg.PrivateKey, extra)
+	if err != nil {
+		return fmt.Errorf("verilink: sign request with idempotency key: %w", err)
 	}
 
 	req.Header.Set("Signature-Input", sigInput)
