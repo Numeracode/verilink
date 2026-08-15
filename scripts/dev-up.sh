@@ -24,14 +24,21 @@ if [ ! -f "$DEV_KEYS" ]; then
   exit 1
 fi
 
+# Reject empty or incomplete key files
+KEY_VAL="$(grep -o 'BOOTSTRAP_SEED_PRIVATE_KEY_JWK=.*' "$DEV_KEYS" | head -1 || true)"
+if [ -z "$KEY_VAL" ] || [ "${#KEY_VAL}" -lt 80 ]; then
+  echo "ERROR: .env.dev-keys at $DEV_KEYS is missing or has an incomplete BOOTSTRAP_SEED_PRIVATE_KEY_JWK entry."
+  exit 1
+fi
+
 cd "$REPO_ROOT"
 
-BUILD_FLAG=""
+BUILD_FLAG="--build"
 if [ "${1:-}" = "--no-build" ]; then
   BUILD_FLAG="--no-build"
 fi
 
-docker compose -f "$COMPOSE_FILE" up --build $BUILD_FLAG -d
+docker compose -f "$COMPOSE_FILE" up $BUILD_FLAG -d
 
 echo ""
 echo "VeriLink dev stack starting:"

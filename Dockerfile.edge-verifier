@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/edge-verifier ./cmd/edge-verifier
 
-FROM alpine:3.20
+FROM alpine:3.21
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=build /out/edge-verifier /usr/local/bin/edge-verifier
 USER app
