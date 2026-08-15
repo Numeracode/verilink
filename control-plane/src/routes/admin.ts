@@ -7,6 +7,7 @@ import { requireStaff } from '../middleware/requireStaff.js';
 import { AppError, CODES } from '../shared/errors/AppError.js';
 import * as syncCursorRepo from '../domains/sync/syncCursorRepository.js';
 import * as bootstrapRepo from '../domains/bootstrap/bootstrapRepository.js';
+import { getDeEmphasisStatus } from '../domains/bootstrap/deEmphasisService.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -106,6 +107,16 @@ router.get(
   defineHandler({
     async handler(_req, res) {
       ok(res, { items: await bootstrapRepo.listUnverifiedIssuers() });
+    },
+  })
+);
+
+/** GET /v1/admin/bootstrap/de-emphasis — de-emphasis readiness + counterfactual. */
+router.get(
+  '/bootstrap/de-emphasis',
+  defineHandler({
+    async handler(_req, res) {
+      ok(res, await getDeEmphasisStatus());
     },
   })
 );
