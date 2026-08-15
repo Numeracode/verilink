@@ -1,0 +1,147 @@
+{{- if .Values.controlPlane.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "verilink.controlPlane.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+    {{- include "verilink.controlPlane.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "verilink.controlPlane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "verilink.controlPlane.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "verilink.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.controlPlane.image.repository "tag" (.Values.controlPlane.image.tag | default .Chart.AppVersion) "appVersion" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.controlPlane.env.databaseUrl | quote }}
+            - name: API_KEY_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "verilink.controlPlane.fullname" . }}-secrets
+                  key: apiKeyHmacSecret
+            - name: TRUST_ENGINE_ADDR
+              value: {{ .Values.controlPlane.env.trustEngineAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.controlPlane.env.logLevel | quote }}
+            - name: NODE_ENV
+              value: {{ .Values.controlPlane.env.nodeEnv | quote }}
+          {{- with .Values.controlPlane.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "verilink.controlPlane.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.controlPlane.service.type }}
+  ports:
+    - port: {{ .Values.controlPlane.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "verilink.controlPlane.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "verilink.controlPlane.fullname" . }}-secrets
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  apiKeyHmacSecret: {{ .Values.controlPlane.env.apiKeyHmacSecret | quote }}
+{{- if .Values.controlPlane.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "verilink.controlPlane.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "verilink.controlPlane.fullname" . }}
+  minReplicas: {{ .Values.controlPlane.hpa.minReplicas }}
+  maxReplicas: {{ .Values.controlPlane.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.controlPlane.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.controlPlane.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "verilink.controlPlane.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+  {{- with .Values.controlPlane.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.controlPlane.ingress.className }}
+  ingressClassName: {{ .Values.controlPlane.ingress.className }}
+  {{- end }}
+  {{- with .Values.controlPlane.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.controlPlane.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "verilink.controlPlane.fullname" $ }}
+                port:
+                  number: {{ $.Values.controlPlane.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
