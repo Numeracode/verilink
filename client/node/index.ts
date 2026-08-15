@@ -1,26 +1,51 @@
-'use strict';
+// client/node/index.ts
+// VeriLink Node.js client — TypeScript, zero external dependencies.
+// Uses Node's built-in crypto module (Ed25519 requires Node >= 15).
 
-/**
- * VeriLink Node.js client — zero external dependencies.
- *
- * Uses Node's built-in `crypto` module (Ed25519 support requires Node ≥ 15).
- *
- * Usage (Whimsy):
- *   const { VeriLinkClient } = require('./client/node');
- *   const vl = VeriLinkClient.fromEnv();        // reads VERILINK_* env vars
- *   await vl.submitAttestation('did:key:whimsy-api', { action: 'file_scan' });
- *   const score = await vl.getTrustScore(fingerprint);
- */
+import crypto from 'node:crypto';
+import https from 'node:https';
+import http from 'node:http';
+import { URL } from 'node:url';
 
-const crypto = require('crypto');
 const { createPrivateKey, sign: nodeCryptoSign, verify: nodeCryptoVerify } = crypto;
-const https = require('https');
-const http = require('http');
-const { URL } = require('url');
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface VeriLinkClientOptions {
+  attestationURL: string;
+  issuerDID: string;
+  privateKeyHex: string;
+}
+
+export interface SubmitAttestationOptions {
+  type?: string;
+  trustLevelDelta?: number;
+}
+
+export interface SignRequestResult {
+  signatureBase: string;
+  sigInput: string;
+  signature: string;
+}
+
+export interface VerifyResult {
+  valid: boolean;
+  keyid: string;
+  reason?: string;
+}
+
+export interface RequestLike {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | Buffer | null;
+  created?: number;
+  expires?: number;
+}
 
 // ── JWT helpers (EdDSA, no external lib) ──────────────────────────────────────
 
-function b64url(buf) {
+function b64url(buf: Buffer | Uint8Array): string {
   return Buffer.from(buf)
     .toString('base64')
     .replace(/\+/g, '-')
@@ -28,15 +53,10 @@ function b64url(buf) {
     .replace(/=/g, '');
 }
 
-/**
- * Import a 64-byte Go-format Ed25519 private key (hex string).
- * Go's ed25519.PrivateKey = seed (32) + public key (32).
- * Node's JWK format needs `d` = seed, `x` = public key.
- */
-function importPrivKey(hexPriv) {
+function importPrivKey(hexPriv: string): crypto.KeyObject {
   if (typeof hexPriv !== 'string' || hexPriv.length !== 128) {
     throw new Error(
-      'VERILINK_ISSUER_PRIVATE_KEY must be 128 hex chars (64-byte Ed25519 key)'
+      'VERILINK_ISSUER_PRIVATE_KEY must be 128 hex chars (64-byte Ed25519 key)',
     );
   }
   const raw = Buffer.from(hexPriv, 'hex');
@@ -51,13 +71,9 @@ function importPrivKey(hexPriv) {
   });
 }
 
-/**
- * Create a signed EdDSA JWT (JWS Compact Serialisation).
- * Compatible with github.com/golang-jwt/jwt/v5 SigningMethodEdDSA.
- */
-function signJWT(payload, privKeyObj) {
-  const header = b64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }));
-  const body = b64url(JSON.stringify(payload));
+function signJWT(payload: Record<string, unknown>, privKeyObj: crypto.KeyObject): string {
+  const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })));
+  const body = b64url(Buffer.from(JSON.stringify(payload)));
   const msg = Buffer.from(`${header}.${body}`);
   const sig = nodeCryptoSign(null, msg, privKeyObj);
   return `${header}.${body}.${b64url(sig)}`;
@@ -65,50 +81,48 @@ function signJWT(payload, privKeyObj) {
 
 // ── RFC 9421 HTTP Message Signatures ──────────────────────────────────────────
 
-/**
- * Compute a content-digest header value per draft-ietf-httpbis-content-digest.
- * @param {Buffer|string|null} body
- * @returns {string} e.g. "sha-256=:abc123=:"
- */
-function computeContentDigest(body) {
+export function computeContentDigest(body: string | Buffer | null): string {
   const buf = body == null ? Buffer.alloc(0) : (typeof body === 'string' ? Buffer.from(body) : body);
   const hash = crypto.createHash('sha256').update(buf).digest();
   return `sha-256=:${b64url(hash)}:`;
 }
 
-/**
- * Build the RFC 9421 signature base string.
- * @param {object} opts
- * @param {string}  opts.method    HTTP method (GET, POST, etc.)
- * @param {string}  opts.targetURI Full target URI
- * @param {number}  opts.created   Unix timestamp
- * @param {number}  opts.expires   Unix timestamp
- * @param {Buffer|string|null} [opts.body]
- * @returns {string}
- */
-function buildSignatureBase({ method, targetURI, created, expires, body }) {
+interface SignatureBaseOpts {
+  method: string;
+  targetURI: string;
+  created: number;
+  expires: number;
+  body?: string | Buffer | null;
+  extra?: Array<{ name: string; value: string }>;
+}
+
+export function buildSignatureBase(opts: SignatureBaseOpts): string {
+  const body = opts.body ?? null;
   const bodyLen = body == null ? 0 : Buffer.byteLength(body);
-  const lines = [
-    `"@method": ${method.toUpperCase()}`,
-    `"@target-uri": ${targetURI}`,
-    `"@created": ${created}`,
-    `"@expires": ${expires}`,
+  const lines: string[] = [
+    `"@method": ${opts.method.toUpperCase()}`,
+    `"@target-uri": ${opts.targetURI}`,
+    `"@created": ${opts.created}`,
+    `"@expires": ${opts.expires}`,
   ];
   if (bodyLen > 0) {
     lines.push(`"content-digest": ${computeContentDigest(body)}`);
   }
+  if (opts.extra) {
+    for (const c of opts.extra) {
+      lines.push(`"${c.name}": ${c.value}`);
+    }
+  }
   return lines.join('\n') + '\n';
 }
 
-/**
- * Sign an outgoing HTTP request with RFC 9421.
- * @param {object} req          Request-like object (url, method, headers)
- * @param {string} privKeyHex   128-char hex Ed25519 private key
- * @param {string} keyLabel     Label for this key
- * @param {string} issuerDID    Issuer DID
- * @returns {{ signatureBase: string, sigInput: string, signature: string }}
- */
-function signRequest(req, privKeyHexOrObj, keyLabel, issuerDID) {
+export function signRequest(
+  req: RequestLike,
+  privKeyHexOrObj: string | crypto.KeyObject,
+  keyLabel: string,
+  issuerDID: string,
+  extra?: Array<{ name: string; value: string }>,
+): SignRequestResult {
   const privKeyObj = typeof privKeyHexOrObj === 'string'
     ? importPrivKey(privKeyHexOrObj)
     : privKeyHexOrObj;
@@ -124,12 +138,17 @@ function signRequest(req, privKeyHexOrObj, keyLabel, issuerDID) {
   const expires = req.expires || now + 300;
   const nonce = crypto.randomUUID().replace(/-/g, '');
 
-  const sigBase = buildSignatureBase({ method, targetURI, created, expires, body });
+  const sigBase = buildSignatureBase({ method, targetURI, created, expires, body, extra });
 
   const sigBytes = nodeCryptoSign(null, Buffer.from(sigBase), privKeyObj);
 
-  const components = ['"@method"', '"@target-uri"', '"@created"', '"@expires"'];
+  const components: string[] = ['"@method"', '"@target-uri"', '"@created"', '"@expires"'];
   if (bodyLen > 0) components.push('"content-digest"');
+  if (extra) {
+    for (const c of extra) {
+      components.push(`"${c.name}"`);
+    }
+  }
 
   const sigInput = `${components.join(' ')};keyid="${keyid}";created=${created};expires=${expires};nonce=${nonce}`;
   const signature = b64url(sigBytes);
@@ -137,17 +156,28 @@ function signRequest(req, privKeyHexOrObj, keyLabel, issuerDID) {
   return { signatureBase: sigBase, sigInput, signature };
 }
 
-/**
- * Verify an RFC 9421 signature on a received request.
- * @param {string}   sigInputHeader  Value of Signature-Input header
- * @param {string}   sigHeader       Value of Signature header
- * @param {string}   method          HTTP method
- * @param {string}   targetURI       Target URI
- * @param {Function} getBody         () => Buffer|string|null
- * @param {Function} lookupKey       (keyid) => crypto.KeyObject (public key)
- * @returns {{ valid: boolean, keyid: string, reason?: string }}
- */
-function verifySignatureInput(sigInputHeader, sigHeader, method, targetURI, getBody, lookupKey) {
+export function signRequestWithIdempotencyKey(
+  req: RequestLike,
+  privKeyHexOrObj: string | crypto.KeyObject,
+  keyLabel: string,
+  issuerDID: string,
+  idempotencyKey: string,
+): SignRequestResult {
+  req.headers = req.headers || {};
+  req.headers['Idempotency-Key'] = idempotencyKey;
+  const extra = [{ name: 'idempotency-key', value: idempotencyKey }];
+  return signRequest(req, privKeyHexOrObj, keyLabel, issuerDID, extra);
+}
+
+export function verifySignatureInput(
+  sigInputHeader: string,
+  sigHeader: string,
+  method: string,
+  targetURI: string,
+  getBody: () => string | Buffer | null,
+  lookupKey: (keyid: string) => crypto.KeyObject | null,
+  getExtraHeader?: (name: string) => string,
+): VerifyResult {
   try {
     if (!sigInputHeader || !sigInputHeader.trim()) {
       return { valid: false, keyid: '', reason: 'empty signature-input header' };
@@ -159,7 +189,7 @@ function verifySignatureInput(sigInputHeader, sigHeader, method, targetURI, getB
       return { valid: false, keyid: '', reason: 'missing covered-component list' };
     }
 
-    const params = {};
+    const params: Record<string, string> = {};
     for (const part of parts.slice(1)) {
       const eqIdx = part.indexOf('=');
       if (eqIdx < 0) continue;
@@ -193,7 +223,19 @@ function verifySignatureInput(sigInputHeader, sigHeader, method, targetURI, getB
     }
 
     const body = getBody();
-    const sigBase = buildSignatureBase({ method, targetURI, created, expires, body });
+
+    // Parse extra components from the component list
+    const derived = new Set(['@method', '@target-uri', '@created', '@expires', 'content-digest']);
+    const componentList = componentsStr.match(/"[^"]+"/g) || [];
+    const extra: Array<{ name: string; value: string }> = [];
+    for (const comp of componentList) {
+      const name = comp.replace(/"/g, '');
+      if (!derived.has(name) && getExtraHeader) {
+        extra.push({ name, value: getExtraHeader(name) });
+      }
+    }
+
+    const sigBase = buildSignatureBase({ method, targetURI, created, expires, body, extra });
 
     const pubKeyObj = lookupKey(keyid);
     if (!pubKeyObj) {
@@ -204,19 +246,19 @@ function verifySignatureInput(sigInputHeader, sigHeader, method, targetURI, getB
     const valid = nodeCryptoVerify(null, Buffer.from(sigBase), pubKeyObj, sigBytes);
     return { valid, keyid };
   } catch (err) {
-    return { valid: false, keyid: '', reason: err.message };
+    return { valid: false, keyid: '', reason: (err as Error).message };
   }
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-function request(method, urlStr, bodyObj) {
+function request(method: string, urlStr: string, bodyObj?: Record<string, unknown> | null): Promise<any> {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const transport = u.protocol === 'https:' ? https : http;
     const body = bodyObj ? JSON.stringify(bodyObj) : null;
 
-    const opts = {
+    const opts: http.RequestOptions = {
       hostname: u.hostname,
       port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search,
@@ -224,21 +266,21 @@ function request(method, urlStr, bodyObj) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+        ...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {}),
       },
     };
 
     const req = transport.request(opts, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => {
         const raw = Buffer.concat(chunks).toString();
-        if (res.statusCode >= 400) {
+        if (res.statusCode && res.statusCode >= 400) {
           reject(
             Object.assign(
               new Error(`VeriLink HTTP ${res.statusCode}: ${raw.trim()}`),
-              { statusCode: res.statusCode }
-            )
+              { statusCode: res.statusCode },
+            ),
           );
           return;
         }
@@ -261,49 +303,35 @@ function request(method, urlStr, bodyObj) {
 
 // ── VeriLinkClient ────────────────────────────────────────────────────────────
 
-class VeriLinkClient {
-  /**
-   * @param {object} opts
-   * @param {string}  opts.attestationURL  Base URL of the attestation service (e.g. http://localhost:8082)
-   * @param {string}  opts.issuerDID       DID of the issuer (e.g. did:key:whimsy-system)
-   * @param {string}  opts.privateKeyHex   128-char hex Ed25519 private key (from verilink-keygen)
-   */
-  constructor({ attestationURL, issuerDID, privateKeyHex }) {
-    if (!attestationURL) throw new Error('VeriLinkClient: attestationURL is required');
-    if (!issuerDID) throw new Error('VeriLinkClient: issuerDID is required');
-    if (!privateKeyHex) throw new Error('VeriLinkClient: privateKeyHex is required');
+export class VeriLinkClient {
+  private _url: string;
+  private _issuer: string;
+  private _privKey: crypto.KeyObject;
 
-    this._url = attestationURL.replace(/\/$/, '');
-    this._issuer = issuerDID;
-    this._privKey = importPrivKey(privateKeyHex);
+  constructor(opts: VeriLinkClientOptions) {
+    if (!opts.attestationURL) throw new Error('VeriLinkClient: attestationURL is required');
+    if (!opts.issuerDID) throw new Error('VeriLinkClient: issuerDID is required');
+    if (!opts.privateKeyHex) throw new Error('VeriLinkClient: privateKeyHex is required');
+
+    this._url = opts.attestationURL.replace(/\/$/, '');
+    this._issuer = opts.issuerDID;
+    this._privKey = importPrivKey(opts.privateKeyHex);
   }
 
-  /**
-   * Build a VeriLinkClient from environment variables:
-   *   VERILINK_ATTESTATION_URL  (default: http://localhost:8082)
-   *   VERILINK_ISSUER_DID
-   *   VERILINK_ISSUER_PRIVATE_KEY
-   */
-  static fromEnv() {
+  static fromEnv(): VeriLinkClient {
     return new VeriLinkClient({
       attestationURL:
-        process.env.VERILINK_ATTESTATION_URL || 'http://localhost:8082',
-      issuerDID: process.env.VERILINK_ISSUER_DID,
-      privateKeyHex: process.env.VERILINK_ISSUER_PRIVATE_KEY,
+        process.env.VERILINK_ATTESTATION_URL || 'https://api.verilink.ai',
+      issuerDID: process.env.VERILINK_ISSUER_DID!,
+      privateKeyHex: process.env.VERILINK_ISSUER_PRIVATE_KEY!,
     });
   }
 
-  /**
-   * Sign and submit a behavioural attestation.
-   *
-   * @param {string} subject      DID or identifier of the subject being attested
-   * @param {object} facts        Arbitrary key/value behavioural facts
-   * @param {object} [opts]
-   * @param {string} [opts.type='behavioral']  Attestation type
-   * @param {number} [opts.trustLevelDelta=10] Score delta to apply
-   * @returns {Promise<void>}
-   */
-  async submitAttestation(subject, facts = {}, opts = {}) {
+  async submitAttestation(
+    subject: string,
+    facts: Record<string, unknown> = {},
+    opts: SubmitAttestationOptions = {},
+  ): Promise<void> {
     const { type = 'behavioral', trustLevelDelta = 10 } = opts;
 
     const now = Math.floor(Date.now() / 1000);
@@ -323,53 +351,33 @@ class VeriLinkClient {
     await request('POST', `${this._url}/v1/attestations/submit`, { token });
   }
 
-  /**
-   * Query the trust score for a fingerprint.
-   *
-   * @param {string} fingerprint  SHA-256 hex fingerprint
-   * @returns {Promise<number>}   Score 0–100
-   */
-  async getTrustScore(fingerprint) {
+  async getTrustScore(fingerprint: string): Promise<number> {
     const data = await request(
       'GET',
-      `${this._url}/v1/trust?fingerprint=${encodeURIComponent(fingerprint)}`
+      `${this._url}/v1/trust?fingerprint=${encodeURIComponent(fingerprint)}`,
     );
     return (data && typeof data.score === 'number') ? data.score : 0;
   }
 
-  /**
-   * Check if a fingerprint meets the trust threshold.
-   *
-   * @param {string} fingerprint
-   * @param {number} [threshold=50]
-   * @returns {Promise<boolean>}
-   */
-  async isTrusted(fingerprint, threshold = 50) {
+  async isTrusted(fingerprint: string, threshold = 50): Promise<boolean> {
     const score = await this.getTrustScore(fingerprint);
     return score >= threshold;
   }
 
-  /**
-   * Sign an outgoing request object with RFC 9421.
-   * Mutates req.headers with Signature-Input and Signature.
-   *
-   * @param {object} req              Request-like object with url, method, headers
-   * @param {string} [keyLabel='default']  Label for the signing key
-   * @returns {{ signatureBase: string, sigInput: string, signature: string }}
-   */
-  signRequest(req, keyLabel = 'default') {
+  signRequest(req: RequestLike, keyLabel = 'default'): SignRequestResult {
     const result = signRequest(req, this._privKey, keyLabel, this._issuer);
     req.headers = req.headers || {};
     req.headers['Signature-Input'] = result.sigInput;
     req.headers['Signature'] = result.signature;
     return result;
   }
-}
 
-module.exports = {
-  VeriLinkClient,
-  computeContentDigest,
-  buildSignatureBase,
-  signRequest,
-  verifySignatureInput,
-};
+  signRequestWithIdempotencyKey(req: RequestLike, keyLabel: string, idempotencyKey: string): SignRequestResult {
+    const result = signRequestWithIdempotencyKey(req, this._privKey, keyLabel, this._issuer, idempotencyKey);
+    req.headers = req.headers || {};
+    req.headers['Signature-Input'] = result.sigInput;
+    req.headers['Signature'] = result.signature;
+    req.headers['Idempotency-Key'] = idempotencyKey;
+    return result;
+  }
+}

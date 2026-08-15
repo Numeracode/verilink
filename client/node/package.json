@@ -1,9 +1,40 @@
 {
-  "name": "@numeracode/verilink-client",
-  "version": "0.0.0",
-  "description": "CommonJS client helpers for VeriLink attestation integrations.",
-  "main": "index.js",
-  "type": "commonjs",
-  "private": true,
-  "license": "MIT"
+  "name": "@verilink/node",
+  "version": "0.1.0",
+  "description": "VeriLink client for Node.js — attestation submission, trust score queries, and RFC 9421 HTTP Message Signature signing.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && tsup --format cjs,esm --dts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "verilink",
+    "trust",
+    "nhi",
+    "agent-security",
+    "attestation",
+    "rfc9421"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
 }
