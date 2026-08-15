@@ -1,0 +1,94 @@
+{{- if .Values.trustEngine.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "verilink.trustEngine.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+    {{- include "verilink.trustEngine.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.trustEngine.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "verilink.trustEngine.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "verilink.trustEngine.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: trust-engine
+          image: {{ include "verilink.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.trustEngine.image.repository "tag" (.Values.trustEngine.image.tag | default .Chart.AppVersion) "appVersion" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.trustEngine.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.trustEngine.grpcPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.trustEngine.httpPort }}
+              protocol: TCP
+          {{- with .Values.trustEngine.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "verilink.trustEngine.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.trustEngine.service.type }}
+  ports:
+    - name: grpc
+      port: {{ .Values.trustEngine.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: http
+      port: {{ .Values.trustEngine.httpPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "verilink.trustEngine.selectorLabels" . | nindent 4 }}
+{{- if .Values.trustEngine.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "verilink.trustEngine.fullname" . }}
+  labels:
+    {{- include "verilink.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "verilink.trustEngine.fullname" . }}
+  minReplicas: {{ .Values.trustEngine.hpa.minReplicas }}
+  maxReplicas: {{ .Values.trustEngine.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.trustEngine.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

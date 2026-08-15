@@ -1,0 +1,122 @@
+# Default values for verilink Helm chart.
+# Presets: --values values.self-host.yaml (single-tenant) or --values values.hosted.yaml (multi-tenant)
+
+# Global
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# Control plane (TS)
+controlPlane:
+  enabled: true
+  image:
+    repository: verilink/control-plane
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    databaseUrl: ""
+    apiKeyHmacSecret: ""
+    trustEngineAddr: "verilink-trust-engine:9091"
+    behavioralV0Allowlist: ""
+    behavioralV0Cutoff: ""
+    logLevel: info
+    nodeEnv: production
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: verilink.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# Trust engine (Go gRPC)
+trustEngine:
+  enabled: true
+  image:
+    repository: verilink/trust-engine
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  grpcPort: 9091
+  httpPort: 8086
+  service:
+    type: ClusterIP
+
+# Edge verifier (Go)
+edgeVerifier:
+  enabled: true
+  kind: Deployment  # Deployment | DaemonSet
+  image:
+    repository: verilink/edge-verifier
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  port: 8080
+  service:
+    type: ClusterIP
+  env:
+    controlPlaneUrl: http://verilink-control-plane:3000
+    trustEngineAddr: verilink-trust-engine:9091
+    apiKey: ""
+
+# Postgres (upstream bitnami chart)
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: ""
+    username: verilink
+    password: ""
+    database: verilink
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+
+# Redis (upstream bitnami chart)
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi

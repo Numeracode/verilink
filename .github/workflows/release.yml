@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build static binaries
+        run: scripts/build-release.sh ${{ github.ref_name }}
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/verilink-edge-verifier-*
+            dist/verilink-trust-engine-*
+            dist/checksums-sha256.txt
+            dist/sbom.cdx.json
+          generate_release_notes: true

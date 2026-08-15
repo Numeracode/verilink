@@ -1,0 +1,32 @@
+[Unit]
+Description=VeriLink Edge Verifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/verilink-edge-verifier \
+  -control-plane-url ${CONTROL_PLANE_URL} \
+  -api-key ${EDGE_API_KEY} \
+  -sync-enabled \
+  -snapshot-path /var/lib/verilink/snapshot.bin \
+  -wal-path /var/lib/verilink/wal.bin \
+  -wal-max-bytes 10485760
+EnvironmentFile=/etc/verilink/verilink-edge.env
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/verilink
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

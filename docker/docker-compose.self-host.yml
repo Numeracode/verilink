@@ -1,0 +1,102 @@
+# VeriLink self-host deployment (design §10.1).
+# Usage: docker compose -f docker/docker-compose.self-host.yml up -d
+#
+# Production stack: no source mounts, no hot reload, no auto-seed.
+# Set required env vars in .env (see .env.example).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-verilink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-verilink}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-verilink}"]
+      interval: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  control-plane:
+    build:
+      context: ../control-plane
+      dockerfile: ../docker/Dockerfile.control-plane
+    restart: unless-stopped
+    ports:
+      - "${CP_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-verilink}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-verilink}
+      API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET:?set API_KEY_HMAC_SECRET in .env}
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      BEHAVIORAL_V0_ALLOWLIST: ${BEHAVIORAL_V0_ALLOWLIST:-}
+      BEHAVIORAL_V0_CUTOFF: ${BEHAVIORAL_V0_CUTOFF:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: production
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "node dist/db/migrate.js && node dist/index.js"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  trust-engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.trust-engine
+    restart: unless-stopped
+    ports:
+      - "${TRUST_GRPC_PORT:-9091}:9091"
+      - "${TRUST_HTTP_PORT:-8086}:8086"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  edge-verifier:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.edge-verifier
+    restart: unless-stopped
+    ports:
+      - "${EDGE_PORT:-8080}:8080"
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:3000
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      API_KEY: ${EDGE_API_KEY:?set EDGE_API_KEY in .env}
+    command: ["-control-plane-url", "http://control-plane:3000", "-api-key", "$EDGE_API_KEY", "-sync-enabled"]
+    depends_on:
+      - control-plane
+      - trust-engine
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  pgdata:
+  redisdata:

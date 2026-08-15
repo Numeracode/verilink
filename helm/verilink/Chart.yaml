@@ -1,0 +1,13 @@
+apiVersion: v2
+name: verilink
+description: VeriLink trust protocol for the agentic economy
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - trust
+  - nhi
+  - agent-security
+  - attestation
+maintainers:
+  - name: Numeracode
