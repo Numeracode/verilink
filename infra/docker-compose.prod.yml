@@ -1,0 +1,121 @@
+# VeriLink production docker-compose (OCI deployment).
+#
+# Canonical path: /opt/docker/apps/verilink/docker-compose.yml is a SYMLINK
+# to this file. Deploy via scripts/rebuild-prod.sh.
+#
+# Ports (all 127.0.0.1 only — public access via Cloudflare tunnel):
+#   control-plane:  8200  (HTTP + dashboard)
+#   trust-engine:   9091  (gRPC), 8086 (healthz)
+#   edge-verifier:  8085  (HTTP proxy)
+#   postgres:       5434
+#   redis:          6381
+
+name: verilink
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: verilink-postgres
+    env_file: /opt/docker/apps/verilink/.env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5434:5432"
+    environment:
+      POSTGRES_DB: verilink
+      POSTGRES_USER: verilink
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - /srv/docker/apps/verilink/pgdata:/var/lib/postgresql/data
+    mem_limit: 512m
+    networks:
+      - verilink-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verilink"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: verilink-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6381:6379"
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    mem_limit: 192m
+    networks:
+      - verilink-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  trust-engine:
+    build:
+      context: /srv/storage/repo/VeriLink
+      dockerfile: docker/Dockerfile.trust-engine
+    container_name: verilink-trust-engine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9092:9091"
+      - "127.0.0.1:8086:8086"
+    mem_limit: 256m
+    networks:
+      - verilink-internal
+
+  control-plane:
+    build:
+      context: /srv/storage/repo/VeriLink
+      dockerfile: docker/Dockerfile.control-plane
+    container_name: verilink-control-plane
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8200:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trust-engine:
+        condition: service_started
+    env_file: /opt/docker/apps/verilink/.env
+    environment:
+      DATABASE_URL: postgresql://verilink:${DB_PASSWORD}@postgres:5432/verilink
+      API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET}
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      BEHAVIORAL_V0_ALLOWLIST: ${BEHAVIORAL_V0_ALLOWLIST:-}
+      BEHAVIORAL_V0_CUTOFF: ${BEHAVIORAL_V0_CUTOFF:-2027-01-01T00:00:00Z}
+      LOG_LEVEL: info
+      NODE_ENV: staging
+      PORT: "3000"
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    command: >
+      sh -c "node dist/db/migrate.js && BOOTSTRAP_SEED=1 node dist/scripts/seed-bootstrap.js && node dist/index.js"
+    mem_limit: 512m
+    networks:
+      - verilink-internal
+
+  edge-verifier:
+    build:
+      context: /srv/storage/repo/VeriLink
+      dockerfile: docker/Dockerfile.edge-verifier
+    container_name: verilink-edge-verifier
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8085:8080"
+    depends_on:
+      - control-plane
+      - trust-engine
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:3000
+      TRUST_ENGINE_ADDR: trust-engine:9091
+      VERILINK_API_KEY: ${EDGE_API_KEY}
+      VERILINK_CONTROL_PLANE_URL: http://control-plane:3000
+      VERILINK_TRUST_ENGINE_ADDR: trust-engine:9091
+      VERILINK_SYNC_ENABLED: "false"
+    mem_limit: 256m
+    networks:
+      - verilink-internal
+
+networks:
+  verilink-internal:
+    driver: bridge
