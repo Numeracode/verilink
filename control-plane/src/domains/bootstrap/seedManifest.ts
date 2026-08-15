@@ -10,12 +10,10 @@
  *   The manifest never mutates: reruns are insert-only.
  * - Mutable registry state (`current_weight`, de-emphasis columns) is never
  *   touched by the seeder; staff PATCH is the only writer.
- * - Public keys below are static Ed25519 JWK `x` values. No private key is
- *   stored in the repo. Seed attestation signing (PR B) needs the bootstrap
- *   issuer's private key from ops (gitignored dev key / env), NOT the repo.
- * - Only verified issuers are seeded as roots. Placeholder entries with
- *   unverified public keys are intentionally NOT in the registry (CodeRabbit
- *   review, PR #32): a root must be a real, verified issuer.
+ * - The VeriLink bootstrap issuer public key below is paired with the dev
+ *   private key in `.env.dev-keys` (gitignored) or `BOOTSTRAP_SEED_PRIVATE_KEY_JWK`
+ *   env var. No private key is stored in the repo.
+ * - Only verified issuers are seeded as roots.
  */
 
 export interface SeedIssuerEntry {
@@ -30,6 +28,22 @@ export interface SeedIssuerEntry {
   note: string;
 }
 
+/** Seed agent subject: a principal attested by the VeriLink bootstrap issuer. */
+export interface SeedAgentEntry {
+  /** Fixed `vrl:p:<uuid>` identity. */
+  id: string;
+  name: string;
+  entityKind: 'agent' | 'both';
+  /** Short provenance note. */
+  note: string;
+  /** Attestation trust_delta (0–100, positive). */
+  trustDelta: number;
+  /** Attestation type (must be a non-negative_incident type). */
+  attestationType: string;
+  /** Canonical facts for the seed attestation. */
+  facts: Record<string, unknown>;
+}
+
 export const BOOTSTRAP_KEY_ID = 'bootstrap-k1';
 
 export const SEED_ISSUERS: readonly SeedIssuerEntry[] = [
@@ -38,7 +52,7 @@ export const SEED_ISSUERS: readonly SeedIssuerEntry[] = [
     name: 'VeriLink Bootstrap',
     entityKind: 'issuer',
     keyId: BOOTSTRAP_KEY_ID,
-    publicKeyX: 'DMOam6VGDdUJkhONOZhfslFkA_L-lKONTIiyRgyVj-0',
+    publicKeyX: 'GOGFvz5XIo7ylOg7DQzOrxyg68ulDuNclIDTMQwhzSI',
     note: 'VeriLink-owned bootstrap root. Signs the seeded initial attestations (PR B).',
   },
   {
@@ -48,6 +62,44 @@ export const SEED_ISSUERS: readonly SeedIssuerEntry[] = [
     keyId: BOOTSTRAP_KEY_ID,
     publicKeyX: 'Mz1Sin-ts2l2P3S0DBhehW02chXdBIg64OHbl2KmMUE',
     note: 'First seeded issuer (design §2.3 / §6.3). Legacy behavioral@0 allowlist member.',
+  },
+];
+
+/**
+ * Seeded agent subjects (Plan 10 decision 5): cold-started via bootstrap-issuer
+ * attestations. Each entry becomes a principal + subject of an attestation
+ * from the VeriLink bootstrap issuer (SEED_ISSUERS[0]).
+ */
+export const SEED_AGENTS: readonly SeedAgentEntry[] = [
+  {
+    id: 'vrl:p:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    name: 'VeriLink Edge Agent',
+    entityKind: 'agent',
+    note: 'VeriLink built-in edge verification agent.',
+    trustDelta: 20,
+    attestationType: 'transaction_summary',
+    facts: {
+      start: '2026-01-01T00:00:00.000Z',
+      end: '2026-08-01T00:00:00.000Z',
+      success_count: 1000,
+      failure_count: 0,
+      dispute_count: 0,
+    },
+  },
+  {
+    id: 'vrl:p:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    name: 'Whimsy Assistant',
+    entityKind: 'agent',
+    note: 'Whimsy platform assistant agent.',
+    trustDelta: 15,
+    attestationType: 'transaction_summary',
+    facts: {
+      start: '2026-03-01T00:00:00.000Z',
+      end: '2026-08-01T00:00:00.000Z',
+      success_count: 500,
+      failure_count: 2,
+      dispute_count: 0,
+    },
   },
 ];
 

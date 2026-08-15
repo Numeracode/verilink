@@ -230,6 +230,7 @@ export async function submitAttestation(opts: {
         issuedAt: new Date(vp.issuedAtUnix * 1000),
         expiresAt: vp.expiresAtUnix > 0 ? new Date(vp.expiresAtUnix * 1000) : undefined,
         verifiedKeyId: verifyResult.verifiedKeyId!,
+        bootstrapOrigin: false,
       }, client);
     });
     // Plan 6: enqueue score recompute after durable ingest (outside TX).
